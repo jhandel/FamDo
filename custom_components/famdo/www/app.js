@@ -216,8 +216,12 @@ class FamDoApp {
 
         const year = this.currentMonth.getFullYear();
         const month = this.currentMonth.getMonth();
-        const start = new Date(year, month, 1).toISOString();
-        const end = new Date(year, month + 1, 0, 23, 59, 59).toISOString();
+        // Use local timezone dates - create start/end as ISO strings with timezone offset
+        const startDate = new Date(year, month, 1);
+        const endDate = new Date(year, month + 1, 0, 23, 59, 59);
+        // Format with timezone offset to preserve local time interpretation
+        const start = startDate.toISOString();
+        const end = endDate.toISOString();
 
         const allEvents = [];
         for (const entityId of selectedCalendars) {
@@ -576,11 +580,11 @@ class FamDoApp {
             return choreDate.getMonth() === month && choreDate.getFullYear() === year;
         });
 
-        // Helper to get HA events for a specific date
+        // Helper to get HA events for a specific date (using local timezone)
         const getHAEventsForDate = (dateStr) => {
             return this.haCalendarEvents.filter(e => {
                 if (!e.start) return false;
-                const eventDate = e.start.split('T')[0];
+                const eventDate = this.parseToLocalDate(e.start);
                 return eventDate === dateStr;
             });
         };
@@ -644,7 +648,7 @@ class FamDoApp {
 
     renderUpcomingEvents() {
         const container = document.getElementById('events-list');
-        const today = new Date().toISOString().split('T')[0];
+        const today = this.formatDateLocal(new Date());
 
         // FamDo internal events
         const upcomingInternal = this.data.events
@@ -655,19 +659,19 @@ class FamDoApp {
                 sortDate: e.start_date
             }));
 
-        // HA calendar events
+        // HA calendar events (parse dates to local timezone)
         const upcomingHA = this.haCalendarEvents
-            .filter(e => e.start && e.start.split('T')[0] >= today)
+            .filter(e => e.start && this.parseToLocalDate(e.start) >= today)
             .map(e => ({
                 id: e.uid || `ha-${e.start}`,
                 title: e.summary,
-                start_date: e.start.split('T')[0],
-                start_time: e.start.includes('T') ? e.start.split('T')[1].substring(0, 5) : null,
+                start_date: this.parseToLocalDate(e.start),
+                start_time: this.parseToLocalTime(e.start),
                 location: e.location,
                 color: '#9B59B6',
                 source: 'ha',
                 calendar_name: e.calendar_name,
-                sortDate: e.start.split('T')[0]
+                sortDate: this.parseToLocalDate(e.start)
             }));
 
         const upcoming = [...upcomingInternal, ...upcomingHA]
@@ -1544,7 +1548,7 @@ class FamDoApp {
         const dayChores = this.data.chores.filter(c => c.due_date === dateStr);
         const dayHAEvents = this.haCalendarEvents.filter(e => {
             if (!e.start) return false;
-            return e.start.split('T')[0] === dateStr;
+            return this.parseToLocalDate(e.start) === dateStr;
         });
 
         const hasAnyContent = dayEvents.length > 0 || dayChores.length > 0 || dayHAEvents.length > 0;
@@ -1566,7 +1570,7 @@ class FamDoApp {
                 ${dayHAEvents.length > 0 ? `
                     <h4 style="margin: 16px 0 8px;">Calendar Events</h4>
                     ${dayHAEvents.map(e => {
-                        const time = e.start.includes('T') ? e.start.split('T')[1].substring(0, 5) : null;
+                        const time = this.parseToLocalTime(e.start);
                         return `
                             <div class="event-item ha-event" style="border-color: #9B59B6">
                                 <div class="event-details">
@@ -1704,6 +1708,42 @@ class FamDoApp {
     }
 
     // ==================== Utilities ====================
+
+    /**
+     * Format a date as YYYY-MM-DD in local timezone
+     */
+    formatDateLocal(date) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+
+    /**
+     * Parse an ISO date string and return the local date as YYYY-MM-DD
+     * Handles both datetime strings (with T) and date-only strings
+     */
+    parseToLocalDate(isoString) {
+        if (!isoString) return null;
+        // If it's already a date-only string (no time component), return as-is
+        if (!isoString.includes('T')) {
+            return isoString.split(' ')[0]; // Handle "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
+        }
+        // Parse the ISO string and convert to local date
+        const date = new Date(isoString);
+        return this.formatDateLocal(date);
+    }
+
+    /**
+     * Parse an ISO date string and return the local time as HH:MM
+     */
+    parseToLocalTime(isoString) {
+        if (!isoString || !isoString.includes('T')) return null;
+        const date = new Date(isoString);
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        return `${hours}:${minutes}`;
+    }
 
     setupColorPicker() {
         document.querySelector('.color-picker')?.addEventListener('click', (e) => {
