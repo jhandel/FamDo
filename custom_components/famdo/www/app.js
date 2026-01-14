@@ -11,6 +11,7 @@ class FamDoApp {
         this.currentMonth = new Date();
         this.connection = null;
         this.subscriptionId = null;
+        this.messageId = 1;  // Incrementing WebSocket message ID
 
         this.init();
     }
@@ -171,7 +172,7 @@ class FamDoApp {
     }
 
     generateId() {
-        return Math.floor(Math.random() * 1000000);
+        return this.messageId++;
     }
 
     async loadData() {
