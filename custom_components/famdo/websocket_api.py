@@ -43,6 +43,8 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_delete_event)
     websocket_api.async_register_command(hass, websocket_update_settings)
     websocket_api.async_register_command(hass, websocket_subscribe)
+    websocket_api.async_register_command(hass, websocket_get_ha_calendars)
+    websocket_api.async_register_command(hass, websocket_get_ha_calendar_events)
 
 
 def _get_coordinator(hass: HomeAssistant) -> FamDoCoordinator:
@@ -146,15 +148,20 @@ async def websocket_update_member(
 ) -> None:
     """Update a family member."""
     coordinator = _get_coordinator(hass)
-    member_id = msg.pop("member_id")
-    msg.pop("type")
-    msg.pop("id")
+    msg_id = msg["id"]
+    member_id = msg["member_id"]
 
-    member = await coordinator.async_update_member(member_id, **msg)
+    # Extract only the update fields
+    update_data = {}
+    for key in ["name", "role", "color", "avatar", "points"]:
+        if key in msg:
+            update_data[key] = msg[key]
+
+    member = await coordinator.async_update_member(member_id, **update_data)
     if member:
-        connection.send_result(msg["id"] if "id" in msg else 0, member.to_dict())
+        connection.send_result(msg_id, member.to_dict())
     else:
-        connection.send_error(msg["id"] if "id" in msg else 0, "not_found", "Member not found")
+        connection.send_error(msg_id, "not_found", "Member not found")
 
 
 @websocket_api.websocket_command(
@@ -667,6 +674,7 @@ async def websocket_delete_event(
     {
         vol.Required("type"): "famdo/update_settings",
         vol.Optional("family_name"): str,
+        vol.Optional("selected_calendars"): list,
     }
 )
 @websocket_api.async_response
@@ -683,7 +691,80 @@ async def websocket_update_settings(
     if "family_name" in msg:
         await coordinator.async_update_family_name(msg.pop("family_name"))
 
+    if "selected_calendars" in msg:
+        await coordinator.async_update_settings(selected_calendars=msg.pop("selected_calendars"))
+
     if msg:
         await coordinator.async_update_settings(**msg)
 
     connection.send_result(msg_id, {"success": True})
+
+
+# ==================== Home Assistant Calendar Integration ====================
+
+
+@websocket_api.websocket_command({vol.Required("type"): "famdo/get_ha_calendars"})
+@websocket_api.async_response
+async def websocket_get_ha_calendars(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Get list of Home Assistant calendar entities."""
+    calendars = []
+    for entity_id in hass.states.async_entity_ids("calendar"):
+        state = hass.states.get(entity_id)
+        if state:
+            calendars.append({
+                "entity_id": entity_id,
+                "name": state.attributes.get("friendly_name", entity_id),
+            })
+    connection.send_result(msg["id"], {"calendars": calendars})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "famdo/get_ha_calendar_events",
+        vol.Required("entity_id"): str,
+        vol.Required("start"): str,
+        vol.Required("end"): str,
+    }
+)
+@websocket_api.async_response
+async def websocket_get_ha_calendar_events(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Get events from a Home Assistant calendar entity."""
+    from datetime import datetime
+
+    entity_id = msg["entity_id"]
+    start = datetime.fromisoformat(msg["start"])
+    end = datetime.fromisoformat(msg["end"])
+
+    try:
+        # Use the calendar component to get events
+        calendar_component = hass.data.get("calendar")
+        if calendar_component:
+            entity = calendar_component.get_entity(entity_id)
+            if entity and hasattr(entity, "async_get_events"):
+                events = await entity.async_get_events(hass, start, end)
+                event_list = []
+                for event in events:
+                    event_list.append({
+                        "summary": event.summary,
+                        "start": event.start.isoformat() if event.start else None,
+                        "end": event.end.isoformat() if event.end else None,
+                        "description": event.description,
+                        "location": event.location,
+                        "uid": getattr(event, "uid", None),
+                    })
+                connection.send_result(msg["id"], {"events": event_list})
+                return
+
+        # Fallback: try using service call
+        connection.send_result(msg["id"], {"events": []})
+    except Exception as e:
+        _LOGGER.error("Error fetching calendar events: %s", e)
+        connection.send_result(msg["id"], {"events": []})

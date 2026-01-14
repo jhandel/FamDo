@@ -12,6 +12,8 @@ class FamDoApp {
         this.connection = null;
         this.subscriptionId = null;
         this.messageId = 1;  // Incrementing WebSocket message ID
+        this.haCalendars = [];  // Available Home Assistant calendar entities
+        this.haCalendarEvents = [];  // Cached HA calendar events for current month
 
         this.init();
     }
@@ -178,6 +180,8 @@ class FamDoApp {
     async loadData() {
         try {
             this.data = await this.sendCommand('famdo/get_data');
+            // Load available HA calendars
+            await this.loadHACalendars();
         } catch (error) {
             console.error('Failed to load data:', error);
             // Initialize with empty data
@@ -187,9 +191,55 @@ class FamDoApp {
                 chores: [],
                 rewards: [],
                 todos: [],
-                events: []
+                events: [],
+                settings: {}
             };
         }
+    }
+
+    async loadHACalendars() {
+        try {
+            const result = await this.sendCommand('famdo/get_ha_calendars');
+            this.haCalendars = result.calendars || [];
+        } catch (error) {
+            console.error('Failed to load HA calendars:', error);
+            this.haCalendars = [];
+        }
+    }
+
+    async loadHACalendarEvents() {
+        const selectedCalendars = this.data.settings?.selected_calendars || [];
+        if (selectedCalendars.length === 0) {
+            this.haCalendarEvents = [];
+            return;
+        }
+
+        const year = this.currentMonth.getFullYear();
+        const month = this.currentMonth.getMonth();
+        const start = new Date(year, month, 1).toISOString();
+        const end = new Date(year, month + 1, 0, 23, 59, 59).toISOString();
+
+        const allEvents = [];
+        for (const entityId of selectedCalendars) {
+            try {
+                const result = await this.sendCommand('famdo/get_ha_calendar_events', {
+                    entity_id: entityId,
+                    start: start,
+                    end: end
+                });
+                const calendar = this.haCalendars.find(c => c.entity_id === entityId);
+                (result.events || []).forEach(event => {
+                    allEvents.push({
+                        ...event,
+                        calendar_name: calendar?.name || entityId,
+                        entity_id: entityId
+                    });
+                });
+            } catch (error) {
+                console.error(`Failed to load events from ${entityId}:`, error);
+            }
+        }
+        this.haCalendarEvents = allEvents;
     }
 
     // ==================== Rendering ====================
@@ -217,6 +267,9 @@ class FamDoApp {
             const isSelected = this.selectedMember?.id === member.id;
             html += `
                 <div class="member-card ${isSelected ? 'selected' : ''}" data-member-id="${member.id}">
+                    <button class="member-edit-btn" data-action="edit" aria-label="Edit ${member.name}">
+                        <span class="mdi mdi-pencil"></span>
+                    </button>
                     <div class="member-avatar" style="background: ${member.color}">
                         <span class="mdi ${member.avatar}"></span>
                     </div>
@@ -489,7 +542,7 @@ class FamDoApp {
         container.innerHTML = html;
     }
 
-    renderCalendar() {
+    async renderCalendar() {
         const grid = document.getElementById('calendar-grid');
         const monthLabel = document.getElementById('current-month');
 
@@ -501,13 +554,16 @@ class FamDoApp {
             year: 'numeric'
         });
 
+        // Load HA calendar events for this month
+        await this.loadHACalendarEvents();
+
         // Get first day of month and total days
         const firstDay = new Date(year, month, 1);
         const lastDay = new Date(year, month + 1, 0);
         const startDay = firstDay.getDay();
         const totalDays = lastDay.getDate();
 
-        // Get events for this month
+        // Get internal FamDo events for this month
         const monthEvents = this.data.events.filter(e => {
             const eventDate = new Date(e.start_date);
             return eventDate.getMonth() === month && eventDate.getFullYear() === year;
@@ -519,6 +575,15 @@ class FamDoApp {
             const choreDate = new Date(c.due_date);
             return choreDate.getMonth() === month && choreDate.getFullYear() === year;
         });
+
+        // Helper to get HA events for a specific date
+        const getHAEventsForDate = (dateStr) => {
+            return this.haCalendarEvents.filter(e => {
+                if (!e.start) return false;
+                const eventDate = e.start.split('T')[0];
+                return eventDate === dateStr;
+            });
+        };
 
         let html = '';
 
@@ -543,6 +608,7 @@ class FamDoApp {
 
             const dayEvents = monthEvents.filter(e => e.start_date === dateStr);
             const dayChores = monthChores.filter(c => c.due_date === dateStr);
+            const dayHAEvents = getHAEventsForDate(dateStr);
 
             html += `
                 <div class="calendar-day ${isToday ? 'today' : ''}" data-date="${dateStr}">
@@ -550,11 +616,14 @@ class FamDoApp {
                     <div class="calendar-day-events">
                         ${dayEvents.map(e => {
                             const member = this.data.members.find(m => e.member_ids?.includes(m.id));
-                            return `<div class="calendar-event-dot" style="background: ${e.color || member?.color || '#4ECDC4'}"></div>`;
+                            return `<div class="calendar-event-dot" style="background: ${e.color || member?.color || '#4ECDC4'}" title="${e.title}"></div>`;
                         }).join('')}
                         ${dayChores.map(c => {
                             const member = this.data.members.find(m => m.id === c.assigned_to);
-                            return `<div class="calendar-event-dot" style="background: ${member?.color || '#FF6B6B'}"></div>`;
+                            return `<div class="calendar-event-dot" style="background: ${member?.color || '#FF6B6B'}" title="${c.name}"></div>`;
+                        }).join('')}
+                        ${dayHAEvents.map(e => {
+                            return `<div class="calendar-event-dot ha-event" style="background: #9B59B6" title="${e.summary} (${e.calendar_name})"></div>`;
                         }).join('')}
                     </div>
                 </div>
@@ -577,10 +646,33 @@ class FamDoApp {
         const container = document.getElementById('events-list');
         const today = new Date().toISOString().split('T')[0];
 
-        const upcoming = this.data.events
+        // FamDo internal events
+        const upcomingInternal = this.data.events
             .filter(e => e.start_date >= today)
-            .sort((a, b) => a.start_date.localeCompare(b.start_date))
-            .slice(0, 5);
+            .map(e => ({
+                ...e,
+                source: 'famdo',
+                sortDate: e.start_date
+            }));
+
+        // HA calendar events
+        const upcomingHA = this.haCalendarEvents
+            .filter(e => e.start && e.start.split('T')[0] >= today)
+            .map(e => ({
+                id: e.uid || `ha-${e.start}`,
+                title: e.summary,
+                start_date: e.start.split('T')[0],
+                start_time: e.start.includes('T') ? e.start.split('T')[1].substring(0, 5) : null,
+                location: e.location,
+                color: '#9B59B6',
+                source: 'ha',
+                calendar_name: e.calendar_name,
+                sortDate: e.start.split('T')[0]
+            }));
+
+        const upcoming = [...upcomingInternal, ...upcomingHA]
+            .sort((a, b) => a.sortDate.localeCompare(b.sortDate))
+            .slice(0, 8);
 
         if (upcoming.length === 0) {
             container.innerHTML = `<div class="empty-state"><p>No upcoming events</p></div>`;
@@ -589,8 +681,9 @@ class FamDoApp {
 
         let html = '';
         upcoming.forEach(event => {
+            const isHA = event.source === 'ha';
             html += `
-                <div class="event-item" data-event-id="${event.id}" style="border-color: ${event.color || '#4ECDC4'}">
+                <div class="event-item ${isHA ? 'ha-event' : ''}" ${!isHA ? `data-event-id="${event.id}"` : ''} style="border-color: ${event.color || '#4ECDC4'}">
                     <div class="event-time">
                         ${this.formatDate(event.start_date)}
                         ${event.start_time ? `<br>${event.start_time}` : ''}
@@ -598,6 +691,7 @@ class FamDoApp {
                     <div class="event-details">
                         <div class="event-title">${event.title}</div>
                         ${event.location ? `<div class="event-location"><span class="mdi mdi-map-marker"></span> ${event.location}</div>` : ''}
+                        ${isHA ? `<div class="event-source"><span class="mdi mdi-calendar-sync"></span> ${event.calendar_name}</div>` : ''}
                     </div>
                 </div>
             `;
@@ -618,6 +712,15 @@ class FamDoApp {
         document.getElementById('member-selector').addEventListener('click', (e) => {
             const memberCard = e.target.closest('.member-card');
             if (!memberCard) return;
+
+            // Check if edit button was clicked
+            const editBtn = e.target.closest('.member-edit-btn');
+            if (editBtn) {
+                e.stopPropagation();
+                const memberId = memberCard.dataset.memberId;
+                this.showEditMemberModal(memberId);
+                return;
+            }
 
             if (memberCard.id === 'add-member-card') {
                 this.showAddMemberModal();
@@ -911,6 +1014,104 @@ class FamDoApp {
                 this.showToast(`Failed: ${error.message}`, 'error');
             }
         });
+    }
+
+    showEditMemberModal(memberId) {
+        const member = this.data.members.find(m => m.id === memberId);
+        if (!member) return;
+
+        const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F'];
+        const icons = ['mdi-account', 'mdi-account-child', 'mdi-face-man', 'mdi-face-woman', 'mdi-dog', 'mdi-cat', 'mdi-robot', 'mdi-alien'];
+
+        const content = `
+            <form id="edit-member-form">
+                <div class="form-group">
+                    <label class="form-label">Name</label>
+                    <input type="text" class="form-input" name="name" required value="${member.name}">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Role</label>
+                    <select class="form-select" name="role">
+                        <option value="child" ${member.role === 'child' ? 'selected' : ''}>Child</option>
+                        <option value="parent" ${member.role === 'parent' ? 'selected' : ''}>Parent</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Points</label>
+                    <input type="number" class="form-input" name="points" value="${member.points}" min="0">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Color</label>
+                    <div class="color-picker">
+                        ${colors.map(c => `
+                            <div class="color-option ${c === member.color ? 'selected' : ''}"
+                                 style="background: ${c}"
+                                 data-color="${c}"></div>
+                        `).join('')}
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Avatar</label>
+                    <div class="icon-picker">
+                        ${icons.map(icon => `
+                            <div class="icon-option ${icon === member.avatar ? 'selected' : ''}" data-icon="${icon}">
+                                <span class="mdi ${icon}"></span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="form-btn danger" onclick="app.deleteMember('${memberId}')">Delete</button>
+                    <button type="button" class="form-btn secondary" onclick="app.closeModal()">Cancel</button>
+                    <button type="submit" class="form-btn">Save</button>
+                </div>
+            </form>
+        `;
+
+        this.showModal('Edit Family Member', content);
+        this.setupColorPicker();
+        this.setupIconPicker();
+
+        document.getElementById('edit-member-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const color = document.querySelector('.color-picker .color-option.selected')?.dataset.color || member.color;
+            const avatar = document.querySelector('.icon-picker .icon-option.selected')?.dataset.icon || member.avatar;
+
+            try {
+                await this.sendCommand('famdo/update_member', {
+                    member_id: memberId,
+                    name: formData.get('name'),
+                    role: formData.get('role'),
+                    points: parseInt(formData.get('points')) || 0,
+                    color: color,
+                    avatar: avatar
+                });
+                this.closeModal();
+                this.showToast('Member updated!', 'success');
+            } catch (error) {
+                this.showToast(`Failed: ${error.message}`, 'error');
+            }
+        });
+    }
+
+    async deleteMember(memberId) {
+        const member = this.data.members.find(m => m.id === memberId);
+        if (!confirm(`Are you sure you want to delete ${member?.name || 'this member'}? This cannot be undone.`)) {
+            return;
+        }
+
+        try {
+            await this.sendCommand('famdo/remove_member', { member_id: memberId });
+            this.closeModal();
+            // If deleted member was selected, select another
+            if (this.selectedMember?.id === memberId) {
+                this.selectedMember = this.data.members.find(m => m.id !== memberId) || null;
+            }
+            this.showToast('Member deleted', 'success');
+        } catch (error) {
+            this.showToast(`Failed: ${error.message}`, 'error');
+        }
     }
 
     showAddChoreModal() {
@@ -1341,12 +1542,18 @@ class FamDoApp {
     showDayEventsModal(dateStr) {
         const dayEvents = this.data.events.filter(e => e.start_date === dateStr);
         const dayChores = this.data.chores.filter(c => c.due_date === dateStr);
+        const dayHAEvents = this.haCalendarEvents.filter(e => {
+            if (!e.start) return false;
+            return e.start.split('T')[0] === dateStr;
+        });
+
+        const hasAnyContent = dayEvents.length > 0 || dayChores.length > 0 || dayHAEvents.length > 0;
 
         const content = `
             <div class="day-events">
                 <h3 style="margin-bottom: 16px;">${this.formatDate(dateStr)}</h3>
                 ${dayEvents.length > 0 ? `
-                    <h4 style="margin-bottom: 8px;">Events</h4>
+                    <h4 style="margin-bottom: 8px;">FamDo Events</h4>
                     ${dayEvents.map(e => `
                         <div class="event-item" style="border-color: ${e.color || '#4ECDC4'}">
                             <div class="event-details">
@@ -1355,6 +1562,22 @@ class FamDoApp {
                             </div>
                         </div>
                     `).join('')}
+                ` : ''}
+                ${dayHAEvents.length > 0 ? `
+                    <h4 style="margin: 16px 0 8px;">Calendar Events</h4>
+                    ${dayHAEvents.map(e => {
+                        const time = e.start.includes('T') ? e.start.split('T')[1].substring(0, 5) : null;
+                        return `
+                            <div class="event-item ha-event" style="border-color: #9B59B6">
+                                <div class="event-details">
+                                    <div class="event-title">${e.summary}</div>
+                                    ${time ? `<div class="event-time-inline"><span class="mdi mdi-clock-outline"></span> ${time}</div>` : ''}
+                                    ${e.location ? `<div class="event-location"><span class="mdi mdi-map-marker"></span> ${e.location}</div>` : ''}
+                                    <div class="event-source"><span class="mdi mdi-calendar-sync"></span> ${e.calendar_name}</div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
                 ` : ''}
                 ${dayChores.length > 0 ? `
                     <h4 style="margin: 16px 0 8px;">Chores Due</h4>
@@ -1372,7 +1595,7 @@ class FamDoApp {
                         `;
                     }).join('')}
                 ` : ''}
-                ${dayEvents.length === 0 && dayChores.length === 0 ? `
+                ${!hasAnyContent ? `
                     <p style="color: var(--text-secondary);">No events or chores for this day.</p>
                 ` : ''}
                 <div class="form-actions">
@@ -1384,12 +1607,34 @@ class FamDoApp {
         this.showModal('Day Details', content);
     }
 
-    showSettingsModal() {
+    async showSettingsModal() {
+        // Refresh HA calendars list
+        await this.loadHACalendars();
+        const selectedCalendars = this.data.settings?.selected_calendars || [];
+
         const content = `
             <form id="settings-form">
                 <div class="form-group">
                     <label class="form-label">Family Name</label>
                     <input type="text" class="form-input" name="family_name" value="${this.data.family_name || ''}">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">
+                        <span class="mdi mdi-calendar-sync"></span> Calendar Sources
+                    </label>
+                    <p class="form-help">Select Home Assistant calendars to display (Google, Office 365, etc.)</p>
+                    <div class="calendar-sources">
+                        ${this.haCalendars.length === 0 ? `
+                            <p class="empty-state-small">No calendar integrations found in Home Assistant. Add a calendar integration (Google Calendar, Office 365, etc.) to see it here.</p>
+                        ` : this.haCalendars.map(cal => `
+                            <label class="calendar-source-option">
+                                <input type="checkbox" name="selected_calendars" value="${cal.entity_id}"
+                                    ${selectedCalendars.includes(cal.entity_id) ? 'checked' : ''}>
+                                <span class="mdi mdi-calendar"></span>
+                                <span class="calendar-source-name">${cal.name}</span>
+                            </label>
+                        `).join('')}
+                    </div>
                 </div>
                 <div class="form-actions">
                     <button type="button" class="form-btn secondary" onclick="app.closeModal()">Cancel</button>
@@ -1403,13 +1648,17 @@ class FamDoApp {
         document.getElementById('settings-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const formData = new FormData(e.target);
+            const calendars = formData.getAll('selected_calendars');
 
             try {
                 await this.sendCommand('famdo/update_settings', {
-                    family_name: formData.get('family_name')
+                    family_name: formData.get('family_name'),
+                    selected_calendars: calendars
                 });
                 this.closeModal();
                 this.showToast('Settings saved!', 'success');
+                // Refresh calendar display with new sources
+                this.renderCalendar();
             } catch (error) {
                 this.showToast(`Failed: ${error.message}`, 'error');
             }

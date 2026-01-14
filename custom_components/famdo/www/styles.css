@@ -176,6 +176,35 @@ body {
     transition: all var(--transition-fast);
     min-width: 70px;
     border: 2px solid transparent;
+    position: relative;
+}
+
+.member-edit-btn {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 24px;
+    height: 24px;
+    border: none;
+    background: rgba(0, 0, 0, 0.5);
+    color: white;
+    font-size: 14px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+    z-index: 10;
+}
+
+.member-card:hover .member-edit-btn {
+    opacity: 1;
+}
+
+.member-edit-btn:hover {
+    background: var(--primary);
 }
 
 .member-card.selected {
@@ -1155,4 +1184,96 @@ body.is-parent .parent-only {
         opacity: 0;
         transform: translateY(-100px) scale(1.5);
     }
+}
+
+/* Calendar Source Picker */
+.calendar-sources {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+    max-height: 200px;
+    overflow-y: auto;
+    padding: var(--spacing-sm);
+    background: var(--bg-secondary);
+    border-radius: var(--border-radius-sm);
+    border: 1px solid var(--border-color);
+}
+
+.calendar-source-option {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    padding: var(--spacing-sm) var(--spacing-md);
+    background: var(--bg-card);
+    border-radius: var(--border-radius-sm);
+    cursor: pointer;
+    transition: background var(--transition-fast);
+}
+
+.calendar-source-option:hover {
+    background: var(--bg-card-hover);
+}
+
+.calendar-source-option input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+    accent-color: var(--primary);
+}
+
+.calendar-source-option .mdi {
+    color: #9B59B6;
+    font-size: 1.25rem;
+}
+
+.calendar-source-name {
+    flex: 1;
+    color: var(--text-primary);
+}
+
+.form-help {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-bottom: var(--spacing-sm);
+}
+
+.empty-state-small {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    padding: var(--spacing-md);
+    text-align: center;
+}
+
+/* HA Calendar Event Styles */
+.calendar-event-dot.ha-event {
+    background: #9B59B6 !important;
+}
+
+.event-item.ha-event {
+    border-left-color: #9B59B6;
+}
+
+.event-source {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 4px;
+}
+
+.event-source .mdi {
+    font-size: 0.875rem;
+    color: #9B59B6;
+}
+
+.event-time-inline {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.event-time-inline .mdi {
+    font-size: 0.875rem;
 }
