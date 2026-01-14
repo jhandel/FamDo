@@ -1553,13 +1553,132 @@ class FamDoApp {
                 ` : ''}
                 ${isParent ? `
                     <div class="form-actions">
-                        <button type="button" class="form-btn danger" onclick="app.deleteChore('${choreId}')">Delete Chore</button>
+                        <button type="button" class="form-btn primary" onclick="app.showEditChoreModal('${choreId}')">
+                            <span class="mdi mdi-pencil"></span> Edit
+                        </button>
+                        <button type="button" class="form-btn danger" onclick="app.deleteChore('${choreId}')">Delete</button>
                     </div>
                 ` : ''}
             </div>
         `;
 
         this.showModal('Chore Details', content);
+    }
+
+    showEditChoreModal(choreId) {
+        const chore = this.data.chores.find(c => c.id === choreId);
+        if (!chore) return;
+
+        const icons = ['mdi-broom', 'mdi-silverware-fork-knife', 'mdi-dog-side', 'mdi-bed', 'mdi-tshirt-crew', 'mdi-trash-can', 'mdi-vacuum', 'mdi-car-wash'];
+        const isRecurring = chore.template_id || chore.recurrence !== 'none';
+
+        const content = `
+            <form id="edit-chore-form">
+                <div class="form-group">
+                    <label class="form-label">Chore Name</label>
+                    <input type="text" class="form-input" name="name" required value="${chore.name}">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Description</label>
+                    <textarea class="form-textarea" name="description">${chore.description || ''}</textarea>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Points</label>
+                        <input type="number" class="form-input" name="points" value="${chore.points}" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Status</label>
+                        <select class="form-select" name="status">
+                            <option value="pending" ${chore.status === 'pending' ? 'selected' : ''}>Available</option>
+                            <option value="claimed" ${chore.status === 'claimed' ? 'selected' : ''}>In Progress</option>
+                            <option value="awaiting_approval" ${chore.status === 'awaiting_approval' ? 'selected' : ''}>Awaiting Approval</option>
+                            <option value="completed" ${chore.status === 'completed' ? 'selected' : ''}>Completed</option>
+                            <option value="overdue" ${chore.status === 'overdue' ? 'selected' : ''}>Overdue</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Assign To</label>
+                    <select class="form-select" name="assigned_to">
+                        <option value="">Anyone</option>
+                        ${this.data.members.map(m => `<option value="${m.id}" ${chore.assigned_to === m.id ? 'selected' : ''}>${m.name}</option>`).join('')}
+                    </select>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Due Date</label>
+                        <input type="date" class="form-input" name="due_date" value="${chore.due_date || ''}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Due Time</label>
+                        <input type="time" class="form-input" name="due_time" value="${chore.due_time || ''}">
+                    </div>
+                </div>
+                ${isRecurring ? `
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Overdue Penalty</label>
+                            <input type="number" class="form-input" name="negative_points" value="${chore.negative_points || 0}" min="0">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Max Queue</label>
+                            <input type="number" class="form-input" name="max_instances" value="${chore.max_instances || 3}" min="1" max="10">
+                        </div>
+                    </div>
+                ` : ''}
+                <div class="form-group">
+                    <label class="form-label">Icon</label>
+                    <div class="icon-picker">
+                        ${icons.map(icon => `
+                            <div class="icon-option ${icon === chore.icon ? 'selected' : ''}" data-icon="${icon}">
+                                <span class="mdi ${icon}"></span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="form-btn danger" onclick="app.deleteChore('${choreId}')">Delete</button>
+                    <button type="button" class="form-btn secondary" onclick="app.closeModal()">Cancel</button>
+                    <button type="submit" class="form-btn">Save</button>
+                </div>
+            </form>
+        `;
+
+        this.showModal('Edit Chore', content);
+        this.setupIconPicker();
+
+        document.getElementById('edit-chore-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const icon = document.querySelector('.icon-picker .icon-option.selected')?.dataset.icon || chore.icon;
+
+            const updateData = {
+                chore_id: choreId,
+                name: formData.get('name'),
+                description: formData.get('description') || '',
+                points: parseInt(formData.get('points')) || 10,
+                status: formData.get('status'),
+                assigned_to: formData.get('assigned_to') || null,
+                due_date: formData.get('due_date') || null,
+                due_time: formData.get('due_time') || null,
+                icon: icon
+            };
+
+            // Include recurring fields if applicable
+            if (isRecurring) {
+                updateData.negative_points = parseInt(formData.get('negative_points')) || 0;
+                updateData.max_instances = parseInt(formData.get('max_instances')) || 3;
+            }
+
+            try {
+                await this.sendCommand('famdo/update_chore', updateData);
+                this.closeModal();
+                this.showToast('Chore updated!', 'success');
+            } catch (error) {
+                this.showToast(`Failed: ${error.message}`, 'error');
+            }
+        });
     }
 
     showRewardDetailsModal(rewardId) {
