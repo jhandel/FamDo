@@ -491,6 +491,34 @@ body {
     color: var(--danger);
 }
 
+/* Recurring chore indicators */
+.recurring-badge {
+    font-size: 0.85em;
+    color: var(--primary);
+    margin-left: 4px;
+    vertical-align: middle;
+}
+
+.negative-points {
+    font-size: 0.85em;
+    color: var(--danger);
+    margin-left: 4px;
+}
+
+.recurring-options {
+    background: rgba(78, 205, 196, 0.1);
+    border: 1px solid rgba(78, 205, 196, 0.2);
+    border-radius: var(--border-radius-sm);
+    padding: var(--spacing-md);
+    margin-bottom: var(--spacing-md);
+}
+
+.recurring-options .form-label .mdi-help-circle {
+    font-size: 0.9em;
+    color: var(--text-secondary);
+    cursor: help;
+}
+
 .chore-due {
     display: flex;
     align-items: center;

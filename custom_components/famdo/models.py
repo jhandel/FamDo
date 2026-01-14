@@ -42,7 +42,18 @@ class FamilyMember:
 
 @dataclass
 class Chore:
-    """Represents a chore."""
+    """Represents a chore.
+
+    Recurring chores work as follows:
+    - A "template" chore (is_template=True) defines the recurrence rules
+    - "Instance" chores are created from templates and can be completed
+    - Templates are not directly completable
+
+    Recurrence types:
+    - none: One-time chore (not a template)
+    - always_on: New instance created immediately after previous is approved
+    - daily/weekly/monthly: Time-based, new instances created on schedule
+    """
 
     id: str = field(default_factory=generate_id)
     name: str = ""
@@ -60,6 +71,13 @@ class Chore:
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     last_reset: Optional[str] = None
 
+    # Recurring chore fields
+    is_template: bool = False  # True if this is a recurring chore template
+    template_id: Optional[str] = None  # Links instance back to template
+    negative_points: int = 0  # Points deducted if overdue (only for time-based)
+    max_instances: int = 1  # Max instances that can exist at once
+    overdue_applied: bool = False  # Track if negative points already applied
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return asdict(self)
@@ -67,6 +85,12 @@ class Chore:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Chore:
         """Create from dictionary."""
+        # Handle legacy chores without new fields
+        data.setdefault("is_template", False)
+        data.setdefault("template_id", None)
+        data.setdefault("negative_points", 0)
+        data.setdefault("max_instances", 1)
+        data.setdefault("overdue_applied", False)
         return cls(**data)
 
 

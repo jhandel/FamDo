@@ -196,6 +196,8 @@ async def websocket_remove_member(
         vol.Optional("due_date"): vol.Any(str, None),
         vol.Optional("due_time"): vol.Any(str, None),
         vol.Optional("icon", default="mdi:broom"): str,
+        vol.Optional("negative_points", default=0): int,
+        vol.Optional("max_instances", default=3): int,
     }
 )
 @websocket_api.async_response
@@ -215,6 +217,8 @@ async def websocket_add_chore(
         due_date=msg.get("due_date"),
         due_time=msg.get("due_time"),
         icon=msg.get("icon", "mdi:broom"),
+        negative_points=msg.get("negative_points", 0),
+        max_instances=msg.get("max_instances", 3),
     )
     connection.send_result(msg["id"], chore.to_dict())
 
@@ -232,6 +236,8 @@ async def websocket_add_chore(
         vol.Optional("due_time"): vol.Any(str, None),
         vol.Optional("icon"): str,
         vol.Optional("status"): str,
+        vol.Optional("negative_points"): int,
+        vol.Optional("max_instances"): int,
     }
 )
 @websocket_api.async_response

@@ -2,7 +2,7 @@
 from typing import Final
 
 DOMAIN: Final = "famdo"
-VERSION: Final = "1.0.0"
+VERSION: Final = "1.3.0"
 
 # Configuration keys
 CONF_FAMILY_NAME: Final = "family_name"
@@ -43,9 +43,13 @@ CHORE_STATUS_OVERDUE: Final = "overdue"
 
 # Recurrence patterns
 RECURRENCE_NONE: Final = "none"
+RECURRENCE_ALWAYS_ON: Final = "always_on"  # Re-created immediately after approval
 RECURRENCE_DAILY: Final = "daily"
 RECURRENCE_WEEKLY: Final = "weekly"
 RECURRENCE_MONTHLY: Final = "monthly"
+
+# Default max instances for recurring chores
+DEFAULT_MAX_INSTANCES: Final = 3
 
 # Default colors for family members
 DEFAULT_COLORS: Final = [

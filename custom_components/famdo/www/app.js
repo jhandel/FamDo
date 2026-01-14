@@ -306,6 +306,9 @@ class FamDoApp {
 
         let chores = [...this.data.chores];
 
+        // Filter out template chores (only show instances)
+        chores = chores.filter(c => !c.is_template);
+
         // Apply filter
         if (filter !== 'all') {
             chores = chores.filter(c => c.status === filter);
@@ -333,6 +336,7 @@ class FamDoApp {
         chores.forEach(chore => {
             const assignedMember = this.data.members.find(m => m.id === chore.assigned_to);
             const claimedMember = this.data.members.find(m => m.id === chore.claimed_by);
+            const isRecurring = chore.template_id || chore.recurrence !== 'none';
 
             html += `
                 <div class="chore-card" data-chore-id="${chore.id}">
@@ -341,7 +345,10 @@ class FamDoApp {
                             <span class="mdi ${chore.icon}"></span>
                         </div>
                         <div class="chore-info">
-                            <div class="chore-name">${chore.name}</div>
+                            <div class="chore-name">
+                                ${chore.name}
+                                ${isRecurring ? `<span class="mdi mdi-refresh recurring-badge" title="Recurring chore"></span>` : ''}
+                            </div>
                             ${chore.description ? `<div class="chore-description">${chore.description}</div>` : ''}
                         </div>
                     </div>
@@ -349,6 +356,7 @@ class FamDoApp {
                         <div class="chore-points">
                             <span class="mdi mdi-star"></span>
                             ${chore.points} pts
+                            ${chore.negative_points > 0 ? `<span class="negative-points">(-${chore.negative_points})</span>` : ''}
                         </div>
                         <span class="chore-status ${chore.status}">${this.formatStatus(chore.status)}</span>
                     </div>
@@ -1139,12 +1147,31 @@ class FamDoApp {
                     </div>
                     <div class="form-group">
                         <label class="form-label">Recurrence</label>
-                        <select class="form-select" name="recurrence">
+                        <select class="form-select" name="recurrence" id="chore-recurrence">
                             <option value="none">One time</option>
+                            <option value="always_on">Always On (repeats after approval)</option>
                             <option value="daily">Daily</option>
                             <option value="weekly">Weekly</option>
                             <option value="monthly">Monthly</option>
                         </select>
+                    </div>
+                </div>
+                <div class="form-group recurring-options" id="recurring-options" style="display: none;">
+                    <div class="form-row">
+                        <div class="form-group" id="negative-points-group" style="display: none;">
+                            <label class="form-label">
+                                Overdue Penalty
+                                <span class="mdi mdi-help-circle" title="Points deducted if chore is not completed by due date"></span>
+                            </label>
+                            <input type="number" class="form-input" name="negative_points" value="0" min="0" placeholder="0">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">
+                                Max Queue
+                                <span class="mdi mdi-help-circle" title="Maximum instances that can exist at once (prevents pile-up)"></span>
+                            </label>
+                            <input type="number" class="form-input" name="max_instances" value="3" min="1" max="10">
+                        </div>
                     </div>
                 </div>
                 <div class="form-group">
@@ -1154,7 +1181,7 @@ class FamDoApp {
                         ${this.data.members.map(m => `<option value="${m.id}">${m.name}</option>`).join('')}
                     </select>
                 </div>
-                <div class="form-row">
+                <div class="form-row" id="due-date-row">
                     <div class="form-group">
                         <label class="form-label">Due Date (optional)</label>
                         <input type="date" class="form-input" name="due_date">
@@ -1184,21 +1211,49 @@ class FamDoApp {
         this.showModal('Add Chore', content);
         this.setupIconPicker();
 
+        // Handle recurrence selection changes
+        const recurrenceSelect = document.getElementById('chore-recurrence');
+        const recurringOptions = document.getElementById('recurring-options');
+        const negativePointsGroup = document.getElementById('negative-points-group');
+        const dueDateRow = document.getElementById('due-date-row');
+
+        const updateRecurrenceUI = () => {
+            const value = recurrenceSelect.value;
+            const isRecurring = value !== 'none';
+            const isTimeBased = ['daily', 'weekly', 'monthly'].includes(value);
+            const isAlwaysOn = value === 'always_on';
+
+            // Show recurring options for all recurring types
+            recurringOptions.style.display = isRecurring ? 'block' : 'none';
+
+            // Show negative points only for time-based chores
+            negativePointsGroup.style.display = isTimeBased ? 'block' : 'none';
+
+            // Hide due date for always_on chores (they don't have deadlines)
+            dueDateRow.style.display = isAlwaysOn ? 'none' : 'flex';
+        };
+
+        recurrenceSelect.addEventListener('change', updateRecurrenceUI);
+
         document.getElementById('add-chore-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const formData = new FormData(e.target);
             const icon = document.querySelector('.icon-picker .icon-option.selected')?.dataset.icon || 'mdi-broom';
+            const recurrence = formData.get('recurrence');
+            const isRecurring = recurrence !== 'none';
 
             try {
                 await this.sendCommand('famdo/add_chore', {
                     name: formData.get('name'),
                     description: formData.get('description') || '',
                     points: parseInt(formData.get('points')) || 10,
-                    recurrence: formData.get('recurrence'),
+                    recurrence: recurrence,
                     assigned_to: formData.get('assigned_to') || null,
                     due_date: formData.get('due_date') || null,
                     due_time: formData.get('due_time') || null,
-                    icon: icon
+                    icon: icon,
+                    negative_points: isRecurring ? parseInt(formData.get('negative_points')) || 0 : 0,
+                    max_instances: isRecurring ? parseInt(formData.get('max_instances')) || 3 : 1
                 });
                 this.closeModal();
                 this.showToast('Chore added!', 'success');
@@ -1443,6 +1498,14 @@ class FamDoApp {
 
         const assignedMember = this.data.members.find(m => m.id === chore.assigned_to);
         const isParent = this.selectedMember?.role === 'parent';
+        const isRecurring = chore.template_id || chore.recurrence !== 'none';
+        const recurrenceLabels = {
+            'none': 'One time',
+            'always_on': 'Always On',
+            'daily': 'Daily',
+            'weekly': 'Weekly',
+            'monthly': 'Monthly'
+        };
 
         const content = `
             <div class="chore-details">
@@ -1451,18 +1514,27 @@ class FamDoApp {
                         <span class="mdi ${chore.icon}"></span>
                     </div>
                     <div>
-                        <h3>${chore.name}</h3>
+                        <h3>
+                            ${chore.name}
+                            ${isRecurring ? `<span class="mdi mdi-refresh recurring-badge"></span>` : ''}
+                        </h3>
                         <span class="chore-status ${chore.status}">${this.formatStatus(chore.status)}</span>
                     </div>
                 </div>
                 ${chore.description ? `<p style="margin-bottom: 16px;">${chore.description}</p>` : ''}
-                <div style="display: flex; gap: 24px; margin-bottom: 16px;">
+                <div style="display: flex; flex-wrap: wrap; gap: 24px; margin-bottom: 16px;">
                     <div>
                         <strong>Points:</strong> ${chore.points}
+                        ${chore.negative_points > 0 ? `<span class="negative-points">(-${chore.negative_points} if overdue)</span>` : ''}
                     </div>
                     <div>
-                        <strong>Recurrence:</strong> ${chore.recurrence || 'None'}
+                        <strong>Recurrence:</strong> ${recurrenceLabels[chore.recurrence] || chore.recurrence}
                     </div>
+                    ${isRecurring && chore.max_instances > 1 ? `
+                        <div>
+                            <strong>Max in queue:</strong> ${chore.max_instances}
+                        </div>
+                    ` : ''}
                 </div>
                 ${chore.due_date ? `
                     <div style="margin-bottom: 16px;">
@@ -1472,6 +1544,11 @@ class FamDoApp {
                 ${assignedMember ? `
                     <div style="margin-bottom: 16px;">
                         <strong>Assigned to:</strong> ${assignedMember.name}
+                    </div>
+                ` : ''}
+                ${chore.overdue_applied ? `
+                    <div style="margin-bottom: 16px; color: var(--danger);">
+                        <span class="mdi mdi-alert"></span> Overdue penalty applied
                     </div>
                 ` : ''}
                 ${isParent ? `

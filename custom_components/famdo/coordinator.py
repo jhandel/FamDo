@@ -19,9 +19,12 @@ from .const import (
     CHORE_STATUS_COMPLETED,
     CHORE_STATUS_REJECTED,
     CHORE_STATUS_OVERDUE,
+    RECURRENCE_NONE,
+    RECURRENCE_ALWAYS_ON,
     RECURRENCE_DAILY,
     RECURRENCE_WEEKLY,
     RECURRENCE_MONTHLY,
+    DEFAULT_MAX_INSTANCES,
     ROLE_PARENT,
 )
 from .models import (
@@ -66,7 +69,7 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         return self._data
 
     async def _check_overdue_chores(self) -> None:
-        """Mark overdue chores."""
+        """Mark overdue chores and apply negative points."""
         if self._data is None:
             return
 
@@ -74,6 +77,10 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         changed = False
 
         for chore in self._data.chores:
+            # Skip templates - only check instances
+            if chore.is_template:
+                continue
+
             if chore.status in [CHORE_STATUS_PENDING, CHORE_STATUS_CLAIMED]:
                 if chore.due_date:
                     due = datetime.fromisoformat(chore.due_date)
@@ -87,55 +94,133 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
                         chore.status = CHORE_STATUS_OVERDUE
                         changed = True
 
+                        # Apply negative points if not already applied
+                        if chore.negative_points > 0 and not chore.overdue_applied:
+                            # Deduct from assigned member or claimed member
+                            member_id = chore.claimed_by or chore.assigned_to
+                            if member_id:
+                                member = self._data.get_member_by_id(member_id)
+                                if member:
+                                    member.points = max(0, member.points - chore.negative_points)
+                                    _LOGGER.info(
+                                        "Applied -%d points to %s for overdue chore: %s",
+                                        chore.negative_points,
+                                        member.name,
+                                        chore.name,
+                                    )
+                            chore.overdue_applied = True
+
         if changed:
             await self.store.async_save()
 
     async def _reset_recurring_chores(self) -> None:
-        """Reset completed recurring chores when due."""
+        """Create new instances for time-based recurring chores."""
         if self._data is None:
             return
 
         now = datetime.now()
+        today = now.date()
         changed = False
 
-        for chore in self._data.chores:
-            if chore.status == CHORE_STATUS_COMPLETED and chore.recurrence != "none":
-                if chore.last_reset:
-                    last_reset = datetime.fromisoformat(chore.last_reset)
-                else:
-                    last_reset = datetime.fromisoformat(chore.completed_at) if chore.completed_at else now
+        # Find all recurring templates (time-based only, not always_on)
+        templates = [
+            c for c in self._data.chores
+            if c.is_template and c.recurrence in [RECURRENCE_DAILY, RECURRENCE_WEEKLY, RECURRENCE_MONTHLY]
+        ]
 
-                should_reset = False
-                if chore.recurrence == RECURRENCE_DAILY:
-                    should_reset = (now - last_reset) >= timedelta(days=1)
-                elif chore.recurrence == RECURRENCE_WEEKLY:
-                    should_reset = (now - last_reset) >= timedelta(weeks=1)
-                elif chore.recurrence == RECURRENCE_MONTHLY:
-                    should_reset = (now - last_reset) >= timedelta(days=30)
+        for template in templates:
+            # Count active (non-completed) instances for this template
+            active_instances = self._count_active_instances(template.id)
 
-                if should_reset:
-                    chore.status = CHORE_STATUS_PENDING
-                    chore.claimed_by = None
-                    chore.completed_at = None
-                    chore.approved_by = None
-                    chore.last_reset = now.isoformat()
-                    # Update due date if set
-                    if chore.due_date:
-                        old_due = datetime.fromisoformat(chore.due_date)
-                        if chore.recurrence == RECURRENCE_DAILY:
-                            new_due = old_due + timedelta(days=1)
-                        elif chore.recurrence == RECURRENCE_WEEKLY:
-                            new_due = old_due + timedelta(weeks=1)
-                        elif chore.recurrence == RECURRENCE_MONTHLY:
-                            new_due = old_due + timedelta(days=30)
-                        else:
-                            new_due = old_due
-                        chore.due_date = new_due.date().isoformat()
-                    changed = True
+            # Don't create more instances if at max
+            if active_instances >= template.max_instances:
+                continue
+
+            # Check if we need to create a new instance based on time
+            last_created = self._get_last_instance_created(template.id)
+
+            should_create = False
+            if last_created is None:
+                # No instances exist, create one
+                should_create = True
+            else:
+                last_date = datetime.fromisoformat(last_created).date()
+                if template.recurrence == RECURRENCE_DAILY:
+                    should_create = today > last_date
+                elif template.recurrence == RECURRENCE_WEEKLY:
+                    should_create = (today - last_date).days >= 7
+                elif template.recurrence == RECURRENCE_MONTHLY:
+                    should_create = (today - last_date).days >= 30
+
+            if should_create:
+                # Calculate due date for the new instance
+                due_date = self._calculate_next_due_date(template, today)
+                await self._create_chore_instance(template, due_date)
+                changed = True
 
         if changed:
             await self.store.async_save()
-            self.async_set_updated_data(self._data)
+
+    def _count_active_instances(self, template_id: str) -> int:
+        """Count non-completed instances of a template."""
+        if self._data is None:
+            return 0
+        return sum(
+            1 for c in self._data.chores
+            if c.template_id == template_id and c.status != CHORE_STATUS_COMPLETED
+        )
+
+    def _get_last_instance_created(self, template_id: str) -> str | None:
+        """Get the creation time of the most recent instance."""
+        if self._data is None:
+            return None
+        instances = [
+            c for c in self._data.chores
+            if c.template_id == template_id
+        ]
+        if not instances:
+            return None
+        return max(c.created_at for c in instances)
+
+    def _calculate_next_due_date(self, template: Chore, from_date) -> str | None:
+        """Calculate the next due date based on recurrence."""
+        if template.recurrence == RECURRENCE_DAILY:
+            return from_date.isoformat()
+        elif template.recurrence == RECURRENCE_WEEKLY:
+            # Due at end of week (or same day next week)
+            return (from_date + timedelta(days=7)).isoformat()
+        elif template.recurrence == RECURRENCE_MONTHLY:
+            return (from_date + timedelta(days=30)).isoformat()
+        elif template.recurrence == RECURRENCE_ALWAYS_ON:
+            # Always-on chores don't have due dates by default
+            return None
+        return None
+
+    async def _create_chore_instance(
+        self, template: Chore, due_date: str | None = None
+    ) -> Chore:
+        """Create a new instance from a template."""
+        from .models import generate_id
+
+        instance = Chore(
+            id=generate_id(),
+            name=template.name,
+            description=template.description,
+            points=template.points,
+            assigned_to=template.assigned_to,
+            status=CHORE_STATUS_PENDING,
+            recurrence=template.recurrence,  # Keep for reference
+            due_date=due_date,
+            due_time=template.due_time,
+            icon=template.icon,
+            is_template=False,
+            template_id=template.id,
+            negative_points=template.negative_points,
+            max_instances=template.max_instances,
+        )
+        self._data.chores.append(instance)
+        _LOGGER.debug("Created new instance of recurring chore: %s", template.name)
+        return instance
 
     @property
     def famdo_data(self) -> FamDoData:
@@ -223,22 +308,57 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         due_date: str | None = None,
         due_time: str | None = None,
         icon: str = "mdi:broom",
+        negative_points: int = 0,
+        max_instances: int = DEFAULT_MAX_INSTANCES,
     ) -> Chore:
-        """Add a new chore."""
-        chore = Chore(
-            name=name,
-            description=description,
-            points=points,
-            assigned_to=assigned_to,
-            recurrence=recurrence,
-            due_date=due_date,
-            due_time=due_time,
-            icon=icon,
-        )
-        self.famdo_data.chores.append(chore)
-        await self.store.async_save()
-        self.async_set_updated_data(self._data)
-        return chore
+        """Add a new chore.
+
+        For recurring chores (recurrence != 'none'), creates a template
+        and an initial instance.
+        """
+        is_recurring = recurrence != RECURRENCE_NONE
+
+        if is_recurring:
+            # Create the template
+            template = Chore(
+                name=name,
+                description=description,
+                points=points,
+                assigned_to=assigned_to,
+                recurrence=recurrence,
+                due_date=None,  # Templates don't have due dates
+                due_time=due_time,
+                icon=icon,
+                is_template=True,
+                negative_points=negative_points,
+                max_instances=max_instances,
+            )
+            self.famdo_data.chores.append(template)
+
+            # Create the first instance
+            instance = await self._create_chore_instance(template, due_date)
+            await self.store.async_save()
+            self.async_set_updated_data(self._data)
+            return instance  # Return the instance, not the template
+        else:
+            # One-time chore
+            chore = Chore(
+                name=name,
+                description=description,
+                points=points,
+                assigned_to=assigned_to,
+                recurrence=recurrence,
+                due_date=due_date,
+                due_time=due_time,
+                icon=icon,
+                is_template=False,
+                negative_points=negative_points,
+                max_instances=1,
+            )
+            self.famdo_data.chores.append(chore)
+            await self.store.async_save()
+            self.async_set_updated_data(self._data)
+            return chore
 
     async def async_update_chore(
         self,
@@ -320,6 +440,19 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
                 "points": chore.points,
             },
         )
+
+        # For always_on recurring chores, create a new instance immediately
+        if chore.template_id and chore.recurrence == RECURRENCE_ALWAYS_ON:
+            template = self.famdo_data.get_chore_by_id(chore.template_id)
+            if template and template.is_template:
+                # Check if we're under the max instances limit
+                active_count = self._count_active_instances(template.id)
+                if active_count < template.max_instances:
+                    await self._create_chore_instance(template)
+                    _LOGGER.info(
+                        "Created new always-on instance for chore: %s",
+                        template.name
+                    )
 
         await self.store.async_save()
         self.async_set_updated_data(self._data)
