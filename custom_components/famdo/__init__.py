@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from homeassistant.components.frontend import async_register_built_in_panel
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -92,7 +93,8 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         [StaticPathConfig("/famdo", str(frontend_path), cache_headers=False)]
     )
 
-    hass.components.frontend.async_register_built_in_panel(
+    async_register_built_in_panel(
+        hass,
         component_name="iframe",
         sidebar_title="FamDo",
         sidebar_icon="mdi:home-heart",
