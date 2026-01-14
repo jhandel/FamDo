@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -87,10 +88,8 @@ async def async_register_panel(hass: HomeAssistant) -> None:
     # Serve frontend from within the integration directory
     frontend_path = Path(__file__).parent / "www"
 
-    hass.http.register_static_path(
-        "/famdo",
-        str(frontend_path),
-        cache_headers=False,
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig("/famdo", str(frontend_path), cache_headers=False)]
     )
 
     hass.components.frontend.async_register_built_in_panel(
