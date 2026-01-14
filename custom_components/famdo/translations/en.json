@@ -1,0 +1,163 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up FamDo Family Dashboard",
+        "description": "Configure your family dashboard for managing chores, rewards, todos, and calendar.",
+        "data": {
+          "family_name": "Family Name"
+        }
+      }
+    },
+    "error": {
+      "unknown": "Unknown error occurred"
+    },
+    "abort": {
+      "single_instance_allowed": "FamDo is already configured. Only a single instance is allowed."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "FamDo Options",
+        "data": {
+          "family_name": "Family Name"
+        }
+      }
+    }
+  },
+  "services": {
+    "add_member": {
+      "name": "Add Family Member",
+      "description": "Add a new member to the family.",
+      "fields": {
+        "name": {
+          "name": "Name",
+          "description": "Name of the family member"
+        },
+        "role": {
+          "name": "Role",
+          "description": "Role (parent or child)"
+        },
+        "color": {
+          "name": "Color",
+          "description": "Color associated with this member"
+        },
+        "avatar": {
+          "name": "Avatar",
+          "description": "MDI icon for avatar"
+        }
+      }
+    },
+    "add_chore": {
+      "name": "Add Chore",
+      "description": "Add a new chore.",
+      "fields": {
+        "name": {
+          "name": "Name",
+          "description": "Name of the chore"
+        },
+        "description": {
+          "name": "Description",
+          "description": "Description of the chore"
+        },
+        "points": {
+          "name": "Points",
+          "description": "Points awarded for completing this chore"
+        },
+        "assigned_to": {
+          "name": "Assigned To",
+          "description": "Member ID to assign this chore to"
+        },
+        "recurrence": {
+          "name": "Recurrence",
+          "description": "How often this chore repeats (none, daily, weekly, monthly)"
+        }
+      }
+    },
+    "complete_chore": {
+      "name": "Complete Chore",
+      "description": "Mark a chore as completed.",
+      "fields": {
+        "chore_id": {
+          "name": "Chore ID",
+          "description": "ID of the chore to complete"
+        },
+        "member_id": {
+          "name": "Member ID",
+          "description": "ID of the member completing the chore"
+        }
+      }
+    },
+    "approve_chore": {
+      "name": "Approve Chore",
+      "description": "Approve a completed chore (parents only).",
+      "fields": {
+        "chore_id": {
+          "name": "Chore ID",
+          "description": "ID of the chore to approve"
+        },
+        "approver_id": {
+          "name": "Approver ID",
+          "description": "ID of the parent approving"
+        }
+      }
+    },
+    "add_reward": {
+      "name": "Add Reward",
+      "description": "Add a new reward.",
+      "fields": {
+        "name": {
+          "name": "Name",
+          "description": "Name of the reward"
+        },
+        "points_cost": {
+          "name": "Points Cost",
+          "description": "Points required to claim this reward"
+        }
+      }
+    },
+    "claim_reward": {
+      "name": "Claim Reward",
+      "description": "Claim a reward using points.",
+      "fields": {
+        "reward_id": {
+          "name": "Reward ID",
+          "description": "ID of the reward to claim"
+        },
+        "member_id": {
+          "name": "Member ID",
+          "description": "ID of the member claiming"
+        }
+      }
+    },
+    "add_todo": {
+      "name": "Add Todo",
+      "description": "Add a new todo item.",
+      "fields": {
+        "title": {
+          "name": "Title",
+          "description": "Title of the todo"
+        },
+        "assigned_to": {
+          "name": "Assigned To",
+          "description": "Member ID to assign this todo to"
+        }
+      }
+    },
+    "add_event": {
+      "name": "Add Event",
+      "description": "Add a calendar event.",
+      "fields": {
+        "title": {
+          "name": "Title",
+          "description": "Title of the event"
+        },
+        "start_date": {
+          "name": "Start Date",
+          "description": "Start date (YYYY-MM-DD)"
+        }
+      }
+    }
+  }
+}

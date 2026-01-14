@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>FamDo - Family Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-left">
+                <span class="mdi mdi-home-heart"></span>
+                <h1 id="family-name">FamDo</h1>
+            </div>
+            <div class="header-right">
+                <button class="icon-btn" id="settings-btn" aria-label="Settings">
+                    <span class="mdi mdi-cog"></span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Member Selector -->
+        <div class="member-selector" id="member-selector">
+            <!-- Members will be populated here -->
+        </div>
+
+        <!-- Navigation Tabs -->
+        <nav class="tab-nav">
+            <button class="tab-btn active" data-tab="chores">
+                <span class="mdi mdi-broom"></span>
+                <span>Chores</span>
+            </button>
+            <button class="tab-btn" data-tab="rewards">
+                <span class="mdi mdi-gift"></span>
+                <span>Rewards</span>
+            </button>
+            <button class="tab-btn" data-tab="todos">
+                <span class="mdi mdi-format-list-checks"></span>
+                <span>Todos</span>
+            </button>
+            <button class="tab-btn" data-tab="calendar">
+                <span class="mdi mdi-calendar"></span>
+                <span>Calendar</span>
+            </button>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Chores Tab -->
+            <section class="tab-content active" id="chores-tab">
+                <div class="section-header">
+                    <h2>Chores</h2>
+                    <button class="add-btn" id="add-chore-btn">
+                        <span class="mdi mdi-plus"></span>
+                    </button>
+                </div>
+                <div class="chore-filters">
+                    <button class="filter-btn active" data-filter="all">All</button>
+                    <button class="filter-btn" data-filter="pending">Available</button>
+                    <button class="filter-btn" data-filter="claimed">In Progress</button>
+                    <button class="filter-btn" data-filter="awaiting_approval">Awaiting Approval</button>
+                </div>
+                <div class="cards-grid" id="chores-list">
+                    <!-- Chores will be populated here -->
+                </div>
+            </section>
+
+            <!-- Rewards Tab -->
+            <section class="tab-content" id="rewards-tab">
+                <div class="section-header">
+                    <h2>Rewards</h2>
+                    <button class="add-btn parent-only" id="add-reward-btn">
+                        <span class="mdi mdi-plus"></span>
+                    </button>
+                </div>
+                <div class="cards-grid" id="rewards-list">
+                    <!-- Rewards will be populated here -->
+                </div>
+            </section>
+
+            <!-- Todos Tab -->
+            <section class="tab-content" id="todos-tab">
+                <div class="section-header">
+                    <h2>Todos</h2>
+                    <button class="add-btn" id="add-todo-btn">
+                        <span class="mdi mdi-plus"></span>
+                    </button>
+                </div>
+                <div class="todo-filters">
+                    <button class="filter-btn active" data-filter="active">Active</button>
+                    <button class="filter-btn" data-filter="completed">Completed</button>
+                    <button class="filter-btn" data-filter="all">All</button>
+                </div>
+                <div class="todo-list" id="todos-list">
+                    <!-- Todos will be populated here -->
+                </div>
+            </section>
+
+            <!-- Calendar Tab -->
+            <section class="tab-content" id="calendar-tab">
+                <div class="section-header">
+                    <h2>Calendar</h2>
+                    <button class="add-btn" id="add-event-btn">
+                        <span class="mdi mdi-plus"></span>
+                    </button>
+                </div>
+                <div class="calendar-nav">
+                    <button class="icon-btn" id="prev-month">
+                        <span class="mdi mdi-chevron-left"></span>
+                    </button>
+                    <h3 id="current-month">January 2024</h3>
+                    <button class="icon-btn" id="next-month">
+                        <span class="mdi mdi-chevron-right"></span>
+                    </button>
+                </div>
+                <div class="calendar-grid" id="calendar-grid">
+                    <!-- Calendar will be populated here -->
+                </div>
+                <div class="events-today">
+                    <h3>Upcoming Events</h3>
+                    <div id="events-list">
+                        <!-- Events will be populated here -->
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Modals -->
+        <div class="modal-overlay" id="modal-overlay">
+            <div class="modal" id="modal">
+                <div class="modal-header">
+                    <h2 id="modal-title">Modal Title</h2>
+                    <button class="icon-btn modal-close" id="modal-close">
+                        <span class="mdi mdi-close"></span>
+                    </button>
+                </div>
+                <div class="modal-body" id="modal-body">
+                    <!-- Modal content will be populated here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Toast Notifications -->
+        <div class="toast-container" id="toast-container"></div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

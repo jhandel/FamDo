@@ -1,0 +1,351 @@
+add_member:
+  name: Add Family Member
+  description: Add a new member to the family.
+  fields:
+    name:
+      name: Name
+      description: Name of the family member
+      required: true
+      example: "Emma"
+      selector:
+        text:
+    role:
+      name: Role
+      description: Role of the family member
+      default: "child"
+      example: "child"
+      selector:
+        select:
+          options:
+            - "parent"
+            - "child"
+    color:
+      name: Color
+      description: Color associated with this member (hex)
+      default: "#4ECDC4"
+      example: "#FF6B6B"
+      selector:
+        text:
+    avatar:
+      name: Avatar
+      description: MDI icon for avatar
+      default: "mdi:account"
+      example: "mdi:account-child"
+      selector:
+        icon:
+
+remove_member:
+  name: Remove Family Member
+  description: Remove a member from the family.
+  fields:
+    member_id:
+      name: Member ID
+      description: ID of the member to remove
+      required: true
+      example: "abc123"
+      selector:
+        text:
+
+add_chore:
+  name: Add Chore
+  description: Add a new chore.
+  fields:
+    name:
+      name: Name
+      description: Name of the chore
+      required: true
+      example: "Make bed"
+      selector:
+        text:
+    description:
+      name: Description
+      description: Description of the chore
+      example: "Make your bed neatly every morning"
+      selector:
+        text:
+    points:
+      name: Points
+      description: Points awarded for completing this chore
+      default: 10
+      example: 15
+      selector:
+        number:
+          min: 1
+          max: 1000
+    assigned_to:
+      name: Assigned To
+      description: Member ID to assign this chore to (optional)
+      example: "xyz789"
+      selector:
+        text:
+    recurrence:
+      name: Recurrence
+      description: How often this chore repeats
+      default: "none"
+      selector:
+        select:
+          options:
+            - "none"
+            - "daily"
+            - "weekly"
+            - "monthly"
+    due_date:
+      name: Due Date
+      description: Due date (YYYY-MM-DD)
+      example: "2024-12-25"
+      selector:
+        date:
+    due_time:
+      name: Due Time
+      description: Due time (HH:MM)
+      example: "18:00"
+      selector:
+        time:
+    icon:
+      name: Icon
+      description: MDI icon for the chore
+      default: "mdi:broom"
+      selector:
+        icon:
+
+complete_chore:
+  name: Complete Chore
+  description: Mark a chore as completed (awaiting approval).
+  fields:
+    chore_id:
+      name: Chore ID
+      description: ID of the chore to complete
+      required: true
+      selector:
+        text:
+    member_id:
+      name: Member ID
+      description: ID of the member completing the chore
+      required: true
+      selector:
+        text:
+
+approve_chore:
+  name: Approve Chore
+  description: Approve a completed chore (parents only).
+  fields:
+    chore_id:
+      name: Chore ID
+      description: ID of the chore to approve
+      required: true
+      selector:
+        text:
+    approver_id:
+      name: Approver ID
+      description: ID of the parent approving
+      required: true
+      selector:
+        text:
+
+reject_chore:
+  name: Reject Chore
+  description: Reject a completed chore.
+  fields:
+    chore_id:
+      name: Chore ID
+      description: ID of the chore to reject
+      required: true
+      selector:
+        text:
+    approver_id:
+      name: Approver ID
+      description: ID of the parent rejecting
+      required: true
+      selector:
+        text:
+
+add_reward:
+  name: Add Reward
+  description: Add a new reward.
+  fields:
+    name:
+      name: Name
+      description: Name of the reward
+      required: true
+      example: "Extra screen time"
+      selector:
+        text:
+    description:
+      name: Description
+      description: Description of the reward
+      example: "30 minutes of extra gaming time"
+      selector:
+        text:
+    points_cost:
+      name: Points Cost
+      description: Points required to claim this reward
+      default: 50
+      selector:
+        number:
+          min: 1
+          max: 10000
+    icon:
+      name: Icon
+      description: MDI icon for the reward
+      default: "mdi:gift"
+      selector:
+        icon:
+    image_url:
+      name: Image URL
+      description: Optional image URL for the reward
+      selector:
+        text:
+    quantity:
+      name: Quantity
+      description: Number available (-1 for unlimited)
+      default: -1
+      selector:
+        number:
+          min: -1
+          max: 1000
+
+claim_reward:
+  name: Claim Reward
+  description: Claim a reward using points.
+  fields:
+    reward_id:
+      name: Reward ID
+      description: ID of the reward to claim
+      required: true
+      selector:
+        text:
+    member_id:
+      name: Member ID
+      description: ID of the member claiming
+      required: true
+      selector:
+        text:
+
+add_todo:
+  name: Add Todo
+  description: Add a new todo item.
+  fields:
+    title:
+      name: Title
+      description: Title of the todo
+      required: true
+      example: "Buy groceries"
+      selector:
+        text:
+    description:
+      name: Description
+      description: Description of the todo
+      selector:
+        text:
+    assigned_to:
+      name: Assigned To
+      description: Member ID to assign this todo to
+      selector:
+        text:
+    due_date:
+      name: Due Date
+      description: Due date (YYYY-MM-DD)
+      selector:
+        date:
+    priority:
+      name: Priority
+      description: Priority level
+      default: "normal"
+      selector:
+        select:
+          options:
+            - "low"
+            - "normal"
+            - "high"
+    category:
+      name: Category
+      description: Category for the todo
+      default: "general"
+      selector:
+        text:
+    created_by:
+      name: Created By
+      description: Member ID who created this todo
+      selector:
+        text:
+
+complete_todo:
+  name: Complete Todo
+  description: Mark a todo as completed.
+  fields:
+    todo_id:
+      name: Todo ID
+      description: ID of the todo to complete
+      required: true
+      selector:
+        text:
+
+add_event:
+  name: Add Calendar Event
+  description: Add a calendar event.
+  fields:
+    title:
+      name: Title
+      description: Title of the event
+      required: true
+      example: "Doctor's appointment"
+      selector:
+        text:
+    start_date:
+      name: Start Date
+      description: Start date (YYYY-MM-DD)
+      required: true
+      selector:
+        date:
+    description:
+      name: Description
+      description: Description of the event
+      selector:
+        text:
+    end_date:
+      name: End Date
+      description: End date (YYYY-MM-DD)
+      selector:
+        date:
+    start_time:
+      name: Start Time
+      description: Start time (HH:MM)
+      selector:
+        time:
+    end_time:
+      name: End Time
+      description: End time (HH:MM)
+      selector:
+        time:
+    all_day:
+      name: All Day
+      description: Is this an all-day event?
+      default: true
+      selector:
+        boolean:
+    member_ids:
+      name: Member IDs
+      description: List of member IDs associated with this event
+      selector:
+        object:
+    color:
+      name: Color
+      description: Event color (hex)
+      selector:
+        text:
+    recurrence:
+      name: Recurrence
+      description: How often this event repeats
+      default: "none"
+      selector:
+        select:
+          options:
+            - "none"
+            - "daily"
+            - "weekly"
+            - "monthly"
+    location:
+      name: Location
+      description: Location of the event
+      selector:
+        text:

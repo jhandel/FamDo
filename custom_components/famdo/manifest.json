@@ -1,0 +1,12 @@
+{
+  "domain": "famdo",
+  "name": "FamDo - Family Dashboard",
+  "codeowners": ["@jhandel"],
+  "config_flow": true,
+  "dependencies": ["http", "websocket_api"],
+  "documentation": "https://github.com/jhandel/FamDo",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/jhandel/FamDo/issues",
+  "requirements": [],
+  "version": "1.0.0"
+}
