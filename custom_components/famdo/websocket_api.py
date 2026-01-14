@@ -675,6 +675,8 @@ async def websocket_delete_event(
         vol.Required("type"): "famdo/update_settings",
         vol.Optional("family_name"): str,
         vol.Optional("selected_calendars"): list,
+        vol.Optional("calendar_colors"): dict,
+        vol.Optional("time_format"): str,  # "12h" or "24h"
     }
 )
 @websocket_api.async_response
@@ -693,6 +695,12 @@ async def websocket_update_settings(
 
     if "selected_calendars" in msg:
         await coordinator.async_update_settings(selected_calendars=msg.pop("selected_calendars"))
+
+    if "calendar_colors" in msg:
+        await coordinator.async_update_settings(calendar_colors=msg.pop("calendar_colors"))
+
+    if "time_format" in msg:
+        await coordinator.async_update_settings(time_format=msg.pop("time_format"))
 
     if msg:
         await coordinator.async_update_settings(**msg)

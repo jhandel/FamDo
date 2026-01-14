@@ -627,7 +627,8 @@ class FamDoApp {
                             return `<div class="calendar-event-dot" style="background: ${member?.color || '#FF6B6B'}" title="${c.name}"></div>`;
                         }).join('')}
                         ${dayHAEvents.map(e => {
-                            return `<div class="calendar-event-dot ha-event" style="background: #9B59B6" title="${e.summary} (${e.calendar_name})"></div>`;
+                            const color = this.getCalendarColor(e.entity_id);
+                            return `<div class="calendar-event-dot ha-event" style="background: ${color}" title="${e.summary} (${e.calendar_name})"></div>`;
                         }).join('')}
                     </div>
                 </div>
@@ -668,7 +669,7 @@ class FamDoApp {
                 start_date: this.parseToLocalDate(e.start),
                 start_time: this.parseToLocalTime(e.start),
                 location: e.location,
-                color: '#9B59B6',
+                color: this.getCalendarColor(e.entity_id),
                 source: 'ha',
                 calendar_name: e.calendar_name,
                 sortDate: this.parseToLocalDate(e.start)
@@ -1571,8 +1572,9 @@ class FamDoApp {
                     <h4 style="margin: 16px 0 8px;">Calendar Events</h4>
                     ${dayHAEvents.map(e => {
                         const time = this.parseToLocalTime(e.start);
+                        const color = this.getCalendarColor(e.entity_id);
                         return `
-                            <div class="event-item ha-event" style="border-color: #9B59B6">
+                            <div class="event-item ha-event" style="border-color: ${color}">
                                 <div class="event-details">
                                     <div class="event-title">${e.summary}</div>
                                     ${time ? `<div class="event-time-inline"><span class="mdi mdi-clock-outline"></span> ${time}</div>` : ''}
@@ -1615,6 +1617,9 @@ class FamDoApp {
         // Refresh HA calendars list
         await this.loadHACalendars();
         const selectedCalendars = this.data.settings?.selected_calendars || [];
+        const calendarColors = this.data.settings?.calendar_colors || {};
+        const timeFormat = this.data.settings?.time_format || '12h';
+        const defaultColors = ['#9B59B6', '#3498DB', '#E74C3C', '#2ECC71', '#F39C12', '#1ABC9C', '#E91E63', '#00BCD4'];
 
         const content = `
             <form id="settings-form">
@@ -1624,20 +1629,43 @@ class FamDoApp {
                 </div>
                 <div class="form-group">
                     <label class="form-label">
+                        <span class="mdi mdi-clock-outline"></span> Time Format
+                    </label>
+                    <div class="time-format-toggle">
+                        <label class="toggle-option ${timeFormat === '12h' ? 'active' : ''}">
+                            <input type="radio" name="time_format" value="12h" ${timeFormat === '12h' ? 'checked' : ''}>
+                            <span>12-hour (AM/PM)</span>
+                        </label>
+                        <label class="toggle-option ${timeFormat === '24h' ? 'active' : ''}">
+                            <input type="radio" name="time_format" value="24h" ${timeFormat === '24h' ? 'checked' : ''}>
+                            <span>24-hour</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">
                         <span class="mdi mdi-calendar-sync"></span> Calendar Sources
                     </label>
-                    <p class="form-help">Select Home Assistant calendars to display (Google, Office 365, etc.)</p>
+                    <p class="form-help">Select Home Assistant calendars to display and choose their colors</p>
                     <div class="calendar-sources">
                         ${this.haCalendars.length === 0 ? `
                             <p class="empty-state-small">No calendar integrations found in Home Assistant. Add a calendar integration (Google Calendar, Office 365, etc.) to see it here.</p>
-                        ` : this.haCalendars.map(cal => `
-                            <label class="calendar-source-option">
-                                <input type="checkbox" name="selected_calendars" value="${cal.entity_id}"
-                                    ${selectedCalendars.includes(cal.entity_id) ? 'checked' : ''}>
-                                <span class="mdi mdi-calendar"></span>
-                                <span class="calendar-source-name">${cal.name}</span>
-                            </label>
-                        `).join('')}
+                        ` : this.haCalendars.map((cal, index) => {
+                            const currentColor = calendarColors[cal.entity_id] || defaultColors[index % defaultColors.length];
+                            return `
+                            <div class="calendar-source-row">
+                                <label class="calendar-source-option">
+                                    <input type="checkbox" name="selected_calendars" value="${cal.entity_id}"
+                                        ${selectedCalendars.includes(cal.entity_id) ? 'checked' : ''}>
+                                    <span class="mdi mdi-calendar"></span>
+                                    <span class="calendar-source-name">${cal.name}</span>
+                                </label>
+                                <input type="color" class="calendar-color-picker"
+                                    data-entity-id="${cal.entity_id}"
+                                    value="${currentColor}"
+                                    title="Choose color for ${cal.name}">
+                            </div>
+                        `}).join('')}
                     </div>
                 </div>
                 <div class="form-actions">
@@ -1649,15 +1677,31 @@ class FamDoApp {
 
         this.showModal('Settings', content);
 
+        // Setup time format toggle interactivity
+        document.querySelectorAll('.time-format-toggle input').forEach(input => {
+            input.addEventListener('change', () => {
+                document.querySelectorAll('.toggle-option').forEach(opt => opt.classList.remove('active'));
+                input.closest('.toggle-option').classList.add('active');
+            });
+        });
+
         document.getElementById('settings-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const formData = new FormData(e.target);
             const calendars = formData.getAll('selected_calendars');
 
+            // Collect calendar colors
+            const colors = {};
+            document.querySelectorAll('.calendar-color-picker').forEach(picker => {
+                colors[picker.dataset.entityId] = picker.value;
+            });
+
             try {
                 await this.sendCommand('famdo/update_settings', {
                     family_name: formData.get('family_name'),
-                    selected_calendars: calendars
+                    time_format: formData.get('time_format'),
+                    selected_calendars: calendars,
+                    calendar_colors: colors
                 });
                 this.closeModal();
                 this.showToast('Settings saved!', 'success');
@@ -1735,14 +1779,37 @@ class FamDoApp {
     }
 
     /**
-     * Parse an ISO date string and return the local time as HH:MM
+     * Parse an ISO date string and return the local time
+     * Uses the time_format setting (12h or 24h)
      */
     parseToLocalTime(isoString) {
         if (!isoString || !isoString.includes('T')) return null;
         const date = new Date(isoString);
-        const hours = String(date.getHours()).padStart(2, '0');
-        const minutes = String(date.getMinutes()).padStart(2, '0');
-        return `${hours}:${minutes}`;
+        return this.formatTime(date.getHours(), date.getMinutes());
+    }
+
+    /**
+     * Format time based on user preference (12h or 24h)
+     */
+    formatTime(hours, minutes) {
+        const timeFormat = this.data?.settings?.time_format || '12h';
+        const mins = String(minutes).padStart(2, '0');
+
+        if (timeFormat === '24h') {
+            return `${String(hours).padStart(2, '0')}:${mins}`;
+        } else {
+            const period = hours >= 12 ? 'PM' : 'AM';
+            const hour12 = hours % 12 || 12;
+            return `${hour12}:${mins} ${period}`;
+        }
+    }
+
+    /**
+     * Get color for a calendar entity
+     */
+    getCalendarColor(entityId) {
+        const colors = this.data?.settings?.calendar_colors || {};
+        return colors[entityId] || '#9B59B6';  // Default purple
     }
 
     setupColorPicker() {
