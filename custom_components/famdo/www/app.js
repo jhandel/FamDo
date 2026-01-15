@@ -383,14 +383,25 @@ class FamDoApp {
     renderChoreActions(chore, claimedMember) {
         const isParent = this.selectedMember?.role === 'parent';
         const isMine = chore.claimed_by === this.selectedMember?.id;
-        const canClaim = !chore.assigned_to || chore.assigned_to === this.selectedMember?.id;
+        const isAssignedToMe = chore.assigned_to === this.selectedMember?.id;
+        const isUnassigned = !chore.assigned_to;
 
         let actions = '';
 
         switch (chore.status) {
             case 'pending':
             case 'overdue':
-                if (canClaim) {
+                if (isAssignedToMe) {
+                    // Assigned to me - show Mark Done directly (will auto-claim)
+                    actions = `
+                        <div class="chore-actions">
+                            <button class="chore-action-btn success" data-action="complete">
+                                <span class="mdi mdi-check"></span> Mark Done
+                            </button>
+                        </div>
+                    `;
+                } else if (isUnassigned) {
+                    // Unassigned - show Claim button
                     actions = `
                         <div class="chore-actions">
                             <button class="chore-action-btn primary" data-action="claim">
@@ -878,6 +889,19 @@ class FamDoApp {
                     break;
 
                 case 'complete':
+                    // Find the chore to check if we need to claim first
+                    const choreToComplete = this.data.chores.find(c => c.id === choreId);
+
+                    // If chore is pending/overdue and assigned to me but not claimed, claim it first
+                    if (choreToComplete &&
+                        (choreToComplete.status === 'pending' || choreToComplete.status === 'overdue') &&
+                        !choreToComplete.claimed_by) {
+                        await this.sendCommand('famdo/claim_chore', {
+                            chore_id: choreId,
+                            member_id: this.selectedMember.id
+                        });
+                    }
+
                     await this.sendCommand('famdo/complete_chore', {
                         chore_id: choreId,
                         member_id: this.selectedMember.id

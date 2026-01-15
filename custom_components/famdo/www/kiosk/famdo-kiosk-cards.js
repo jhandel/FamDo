@@ -522,18 +522,25 @@ class FamDoChoresCard extends FamDoBaseCard {
   _renderChore(chore) {
     const assignedMember = this._getMember(chore.assigned_to);
     const isMine = chore.claimed_by === this._selectedMemberId;
-    const canClaim = chore.status === 'pending' || chore.status === 'overdue';
-    const canComplete = chore.status === 'claimed' && isMine;
+    const isAssignedToMe = chore.assigned_to === this._selectedMemberId;
+    const isUnassigned = !chore.assigned_to;
+    const isPendingOrOverdue = chore.status === 'pending' || chore.status === 'overdue';
+
+    // Can claim only unassigned chores
+    const canClaim = isPendingOrOverdue && isUnassigned;
+    // Can complete if: assigned to me (pending/overdue), or already claimed by me
+    const canComplete = (isPendingOrOverdue && isAssignedToMe) || (chore.status === 'claimed' && isMine);
     const canRetry = chore.status === 'rejected' && isMine;
 
     let actionBtn = '';
-    if (canClaim) {
-      actionBtn = `<button class="famdo-btn famdo-btn-primary" data-action="claim" data-id="${chore.id}">
-        <ha-icon icon="mdi:hand-back-right"></ha-icon> Claim
-      </button>`;
-    } else if (canComplete) {
+    if (canComplete) {
+      // For assigned chores, "Done" will auto-claim first if needed
       actionBtn = `<button class="famdo-btn famdo-btn-success" data-action="complete" data-id="${chore.id}">
         <ha-icon icon="mdi:check"></ha-icon> Done
+      </button>`;
+    } else if (canClaim) {
+      actionBtn = `<button class="famdo-btn famdo-btn-primary" data-action="claim" data-id="${chore.id}">
+        <ha-icon icon="mdi:hand-back-right"></ha-icon> Claim
       </button>`;
     } else if (canRetry) {
       actionBtn = `<button class="famdo-btn famdo-btn-primary" data-action="retry" data-id="${chore.id}">
@@ -614,6 +621,17 @@ class FamDoChoresCard extends FamDoBaseCard {
 
   async _completeChore(choreId) {
     if (!this._selectedMemberId) return;
+
+    // Find the chore to check if we need to claim first
+    const chore = this._data?.chores?.find(c => c.id === choreId);
+
+    // If chore is pending/overdue and assigned to me but not claimed, claim it first
+    if (chore && (chore.status === 'pending' || chore.status === 'overdue') && !chore.claimed_by) {
+      await this._sendCommand('famdo/claim_chore', {
+        chore_id: choreId,
+        member_id: this._selectedMemberId
+      });
+    }
 
     const result = await this._sendCommand('famdo/complete_chore', {
       chore_id: choreId,
