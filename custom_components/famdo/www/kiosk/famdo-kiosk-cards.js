@@ -1032,12 +1032,18 @@ class FamDoTodayCard extends FamDoBaseCard {
     const today = new Date();
     const todayStr = today.toISOString().split('T')[0];
 
-    // Get today's chores
-    let todayChores = [];
+    // Get chores: due today OR no due date, not completed
+    let allChores = [];
     if (this._config.show_chores) {
-      todayChores = (this._data.chores || [])
-        .filter(c => !c.is_template && c.due_date === todayStr && c.status !== 'completed');
+      allChores = (this._data.chores || [])
+        .filter(c => !c.is_template && c.status !== 'completed')
+        .filter(c => !c.due_date || c.due_date === todayStr || c.due_date < todayStr);
     }
+
+    // Separate into due today (highlighted) and no due date (anytime)
+    const dueToday = allChores.filter(c => c.due_date === todayStr);
+    const overdue = allChores.filter(c => c.due_date && c.due_date < todayStr);
+    const anytime = allChores.filter(c => !c.due_date);
 
     // Get today's events
     let todayEvents = [];
@@ -1046,7 +1052,7 @@ class FamDoTodayCard extends FamDoBaseCard {
         .filter(e => e.start_date === todayStr);
     }
 
-    const hasContent = todayChores.length > 0 || todayEvents.length > 0;
+    const hasContent = allChores.length > 0 || todayEvents.length > 0;
 
     this.shadowRoot.innerHTML = `
       <style>${KIOSK_STYLES}
@@ -1083,6 +1089,14 @@ class FamDoTodayCard extends FamDoBaseCard {
           gap: 8px;
         }
 
+        .today-section-title.urgent {
+          color: var(--famdo-danger);
+        }
+
+        .today-section-title.highlight {
+          color: var(--famdo-warning);
+        }
+
         .today-item {
           display: flex;
           align-items: center;
@@ -1095,7 +1109,19 @@ class FamDoTodayCard extends FamDoBaseCard {
         }
 
         .today-item.chore {
+          border-left-color: var(--famdo-text-secondary);
+        }
+
+        .today-item.chore.due-today {
           border-left-color: var(--famdo-warning);
+          background: rgba(255, 234, 167, 0.1);
+          box-shadow: 0 0 0 1px rgba(255, 234, 167, 0.3);
+        }
+
+        .today-item.chore.overdue {
+          border-left-color: var(--famdo-danger);
+          background: rgba(255, 107, 107, 0.15);
+          box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.3);
         }
 
         .today-item.event {
@@ -1126,9 +1152,32 @@ class FamDoTodayCard extends FamDoBaseCard {
           color: var(--famdo-text);
         }
 
+        .today-item.due-today .today-item-title,
+        .today-item.overdue .today-item-title {
+          font-weight: 600;
+        }
+
         .today-item-meta {
           font-size: 0.85rem;
           color: var(--famdo-text-secondary);
+        }
+
+        .due-badge {
+          font-size: 0.75rem;
+          padding: 2px 8px;
+          border-radius: 10px;
+          font-weight: 500;
+          margin-left: 8px;
+        }
+
+        .due-badge.today {
+          background: var(--famdo-warning);
+          color: #000;
+        }
+
+        .due-badge.overdue {
+          background: var(--famdo-danger);
+          color: #fff;
         }
       </style>
       <ha-card>
@@ -1145,26 +1194,23 @@ class FamDoTodayCard extends FamDoBaseCard {
             </div>
           ` : ''}
 
-          ${todayChores.length > 0 ? `
+          ${overdue.length > 0 ? `
             <div class="today-section">
-              <div class="today-section-title">
-                <ha-icon icon="mdi:broom"></ha-icon>
-                Chores Due Today
+              <div class="today-section-title urgent">
+                <ha-icon icon="mdi:alert-circle"></ha-icon>
+                Overdue
               </div>
-              ${todayChores.map(c => {
-                const member = this._getMember(c.assigned_to);
-                return `
-                  <div class="today-item chore">
-                    <div class="today-item-icon" style="background: ${member?.color || '#FFEAA7'}">
-                      <ha-icon icon="${c.icon}"></ha-icon>
-                    </div>
-                    <div class="today-item-info">
-                      <div class="today-item-title">${c.name}</div>
-                      <div class="today-item-meta">${c.points} pts${c.due_time ? ` - Due ${c.due_time}` : ''}</div>
-                    </div>
-                  </div>
-                `;
-              }).join('')}
+              ${overdue.map(c => this._renderChore(c, 'overdue')).join('')}
+            </div>
+          ` : ''}
+
+          ${dueToday.length > 0 ? `
+            <div class="today-section">
+              <div class="today-section-title highlight">
+                <ha-icon icon="mdi:clock-alert"></ha-icon>
+                Due Today
+              </div>
+              ${dueToday.map(c => this._renderChore(c, 'due-today')).join('')}
             </div>
           ` : ''}
 
@@ -1187,8 +1233,39 @@ class FamDoTodayCard extends FamDoBaseCard {
               `).join('')}
             </div>
           ` : ''}
+
+          ${anytime.length > 0 ? `
+            <div class="today-section">
+              <div class="today-section-title">
+                <ha-icon icon="mdi:broom"></ha-icon>
+                Available Anytime
+              </div>
+              ${anytime.map(c => this._renderChore(c, '')).join('')}
+            </div>
+          ` : ''}
         </div>
       </ha-card>
+    `;
+  }
+
+  _renderChore(chore, urgencyClass) {
+    const member = this._getMember(chore.assigned_to);
+    const badgeClass = urgencyClass === 'overdue' ? 'overdue' : urgencyClass === 'due-today' ? 'today' : '';
+    const badgeText = urgencyClass === 'overdue' ? 'Overdue' : urgencyClass === 'due-today' ? 'Today' : '';
+
+    return `
+      <div class="today-item chore ${urgencyClass}">
+        <div class="today-item-icon" style="background: ${member?.color || '#4ECDC4'}">
+          <ha-icon icon="${chore.icon}"></ha-icon>
+        </div>
+        <div class="today-item-info">
+          <div class="today-item-title">
+            ${chore.name}
+            ${badgeText ? `<span class="due-badge ${badgeClass}">${badgeText}</span>` : ''}
+          </div>
+          <div class="today-item-meta">${chore.points} pts${chore.due_time ? ` - Due ${chore.due_time}` : ''}</div>
+        </div>
+      </div>
     `;
   }
 
