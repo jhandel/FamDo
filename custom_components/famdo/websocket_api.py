@@ -29,6 +29,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_complete_chore)
     websocket_api.async_register_command(hass, websocket_approve_chore)
     websocket_api.async_register_command(hass, websocket_reject_chore)
+    websocket_api.async_register_command(hass, websocket_retry_chore)
     websocket_api.async_register_command(hass, websocket_delete_chore)
     websocket_api.async_register_command(hass, websocket_add_reward)
     websocket_api.async_register_command(hass, websocket_update_reward)
@@ -345,6 +346,28 @@ async def websocket_reject_chore(
         connection.send_result(msg["id"], chore.to_dict())
     else:
         connection.send_error(msg["id"], "failed", "Could not reject chore")
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "famdo/retry_chore",
+        vol.Required("chore_id"): str,
+        vol.Required("member_id"): str,
+    }
+)
+@websocket_api.async_response
+async def websocket_retry_chore(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Retry a rejected chore."""
+    coordinator = _get_coordinator(hass)
+    chore = await coordinator.async_retry_chore(msg["chore_id"], msg["member_id"])
+    if chore:
+        connection.send_result(msg["id"], chore.to_dict())
+    else:
+        connection.send_error(msg["id"], "failed", "Could not retry chore")
 
 
 @websocket_api.websocket_command(

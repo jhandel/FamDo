@@ -524,6 +524,7 @@ class FamDoChoresCard extends FamDoBaseCard {
     const isMine = chore.claimed_by === this._selectedMemberId;
     const canClaim = chore.status === 'pending' || chore.status === 'overdue';
     const canComplete = chore.status === 'claimed' && isMine;
+    const canRetry = chore.status === 'rejected' && isMine;
 
     let actionBtn = '';
     if (canClaim) {
@@ -533,6 +534,10 @@ class FamDoChoresCard extends FamDoBaseCard {
     } else if (canComplete) {
       actionBtn = `<button class="famdo-btn famdo-btn-success" data-action="complete" data-id="${chore.id}">
         <ha-icon icon="mdi:check"></ha-icon> Done
+      </button>`;
+    } else if (canRetry) {
+      actionBtn = `<button class="famdo-btn famdo-btn-primary" data-action="retry" data-id="${chore.id}">
+        <ha-icon icon="mdi:refresh"></ha-icon> Retry
       </button>`;
     } else if (chore.status === 'awaiting_approval') {
       actionBtn = `<span style="color: var(--famdo-text-secondary); font-size: 0.9rem;">Waiting for approval</span>`;
@@ -587,6 +592,8 @@ class FamDoChoresCard extends FamDoBaseCard {
           await this._claimChore(choreId);
         } else if (action === 'complete') {
           await this._completeChore(choreId);
+        } else if (action === 'retry') {
+          await this._retryChore(choreId);
         }
       });
     });
@@ -615,6 +622,19 @@ class FamDoChoresCard extends FamDoBaseCard {
 
     if (result) {
       this._showToast('Submitted for approval!', 'success');
+    }
+  }
+
+  async _retryChore(choreId) {
+    if (!this._selectedMemberId) return;
+
+    const result = await this._sendCommand('famdo/retry_chore', {
+      chore_id: choreId,
+      member_id: this._selectedMemberId
+    });
+
+    if (result) {
+      this._showToast('Chore ready to retry!', 'success');
     }
   }
 

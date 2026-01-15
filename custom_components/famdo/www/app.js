@@ -445,11 +445,16 @@ class FamDoApp {
                 if (isMine) {
                     actions = `
                         <div class="chore-actions">
-                            <button class="chore-action-btn primary" data-action="claim">
+                            <button class="chore-action-btn primary" data-action="retry">
                                 <span class="mdi mdi-refresh"></span> Try Again
                             </button>
                         </div>
                     `;
+                } else {
+                    actions = `<div class="assigned-member" style="color: var(--danger);">
+                        <span class="mdi mdi-close-circle"></span>
+                        Rejected${claimedMember ? ` - ${claimedMember.name}` : ''}
+                    </div>`;
                 }
                 break;
         }
@@ -896,6 +901,14 @@ class FamDoApp {
                         approver_id: this.selectedMember.id
                     });
                     this.showToast('Chore rejected', 'info');
+                    break;
+
+                case 'retry':
+                    await this.sendCommand('famdo/retry_chore', {
+                        chore_id: choreId,
+                        member_id: this.selectedMember.id
+                    });
+                    this.showToast('Chore ready to retry!', 'success');
                     break;
             }
         } catch (error) {

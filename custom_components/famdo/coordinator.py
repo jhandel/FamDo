@@ -479,6 +479,27 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         self.async_set_updated_data(self._data)
         return chore
 
+    async def async_retry_chore(
+        self, chore_id: str, member_id: str
+    ) -> Chore | None:
+        """Retry a rejected chore - sets it back to claimed status."""
+        chore = self.famdo_data.get_chore_by_id(chore_id)
+        if chore is None:
+            return None
+
+        # Verify the member is the one who claimed it
+        if chore.claimed_by != member_id:
+            return None
+
+        if chore.status != CHORE_STATUS_REJECTED:
+            return None
+
+        chore.status = CHORE_STATUS_CLAIMED
+        chore.completed_at = None  # Clear completed timestamp
+        await self.store.async_save()
+        self.async_set_updated_data(self._data)
+        return chore
+
     async def async_delete_chore(self, chore_id: str) -> bool:
         """Delete a chore."""
         chore = self.famdo_data.get_chore_by_id(chore_id)
