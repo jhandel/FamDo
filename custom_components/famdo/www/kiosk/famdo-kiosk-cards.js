@@ -472,6 +472,7 @@ class FamDoChoresCard extends FamDoBaseCard {
         .chore-status.claimed { background: rgba(255, 234, 167, 0.2); color: #D4A017; }
         .chore-status.awaiting_approval { background: rgba(221, 160, 221, 0.2); color: #DDA0DD; }
         .chore-status.overdue { background: rgba(255, 107, 107, 0.2); color: var(--famdo-danger); }
+        .chore-status.rejected { background: rgba(255, 107, 107, 0.2); color: var(--famdo-danger); }
 
         .chore-actions {
           display: flex;
@@ -578,7 +579,8 @@ class FamDoChoresCard extends FamDoBaseCard {
       'pending': 'Available',
       'claimed': 'In Progress',
       'awaiting_approval': 'Pending',
-      'overdue': 'Overdue'
+      'overdue': 'Overdue',
+      'rejected': 'Rejected'
     };
     return labels[status] || status;
   }

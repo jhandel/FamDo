@@ -197,9 +197,15 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         return None
 
     async def _create_chore_instance(
-        self, template: Chore, due_date: str | None = None
+        self, template: Chore, due_date: str | None = None, assigned_to: str | None = None
     ) -> Chore:
-        """Create a new instance from a template."""
+        """Create a new instance from a template.
+
+        Args:
+            template: The template chore to create an instance from
+            due_date: Optional due date for the instance
+            assigned_to: Optional member to assign to (overrides template assignment)
+        """
         from .models import generate_id
 
         instance = Chore(
@@ -207,7 +213,7 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
             name=template.name,
             description=template.description,
             points=template.points,
-            assigned_to=template.assigned_to,
+            assigned_to=assigned_to if assigned_to else template.assigned_to,
             status=CHORE_STATUS_PENDING,
             recurrence=template.recurrence,  # Keep for reference
             due_date=due_date,
@@ -448,10 +454,13 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
                 # Check if we're under the max instances limit
                 active_count = self._count_active_instances(template.id)
                 if active_count < template.max_instances:
-                    await self._create_chore_instance(template)
+                    # Auto-assign to the same person who completed this chore
+                    new_assigned_to = chore.claimed_by or chore.assigned_to
+                    await self._create_chore_instance(template, assigned_to=new_assigned_to)
                     _LOGGER.info(
-                        "Created new always-on instance for chore: %s",
-                        template.name
+                        "Created new always-on instance for chore: %s (assigned to: %s)",
+                        template.name,
+                        new_assigned_to
                     )
 
         await self.store.async_save()
