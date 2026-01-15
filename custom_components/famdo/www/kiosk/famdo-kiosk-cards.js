@@ -1073,11 +1073,13 @@ class FamDoTodayCard extends FamDoBaseCard {
     const todayStr = today.toISOString().split('T')[0];
 
     // Get chores: due today OR no due date, not completed
+    // Filter by: unassigned OR assigned to selected user
     let allChores = [];
     if (this._config.show_chores) {
       allChores = (this._data.chores || [])
         .filter(c => !c.is_template && c.status !== 'completed')
-        .filter(c => !c.due_date || c.due_date === todayStr || c.due_date < todayStr);
+        .filter(c => !c.due_date || c.due_date === todayStr || c.due_date < todayStr)
+        .filter(c => !c.assigned_to || c.assigned_to === this._selectedMemberId);
     }
 
     // Separate into due today (highlighted) and no due date (anytime)
@@ -1219,6 +1221,17 @@ class FamDoTodayCard extends FamDoBaseCard {
           background: var(--famdo-danger);
           color: #fff;
         }
+
+        .today-item-actions {
+          display: flex;
+          gap: 8px;
+          flex-shrink: 0;
+        }
+
+        .today-item-actions .famdo-btn {
+          padding: 8px 12px;
+          font-size: 0.85rem;
+        }
       </style>
       <ha-card>
         <div class="famdo-card">
@@ -1286,12 +1299,41 @@ class FamDoTodayCard extends FamDoBaseCard {
         </div>
       </ha-card>
     `;
+
+    this._attachEventListeners();
   }
 
   _renderChore(chore, urgencyClass) {
     const member = this._getMember(chore.assigned_to);
     const badgeClass = urgencyClass === 'overdue' ? 'overdue' : urgencyClass === 'due-today' ? 'today' : '';
     const badgeText = urgencyClass === 'overdue' ? 'Overdue' : urgencyClass === 'due-today' ? 'Today' : '';
+
+    // Action button logic (same as chores card)
+    const isMine = chore.claimed_by === this._selectedMemberId;
+    const isAssignedToMe = chore.assigned_to === this._selectedMemberId;
+    const isUnassigned = !chore.assigned_to;
+    const isPendingOrOverdue = chore.status === 'pending' || chore.status === 'overdue';
+
+    const canClaim = isPendingOrOverdue && isUnassigned;
+    const canComplete = (isPendingOrOverdue && isAssignedToMe) || (chore.status === 'claimed' && isMine);
+    const canRetry = chore.status === 'rejected' && isMine;
+
+    let actionBtn = '';
+    if (canComplete) {
+      actionBtn = `<button class="famdo-btn famdo-btn-success" data-action="complete" data-id="${chore.id}">
+        <ha-icon icon="mdi:check"></ha-icon> Done
+      </button>`;
+    } else if (canClaim) {
+      actionBtn = `<button class="famdo-btn famdo-btn-primary" data-action="claim" data-id="${chore.id}">
+        <ha-icon icon="mdi:hand-back-right"></ha-icon> Claim
+      </button>`;
+    } else if (canRetry) {
+      actionBtn = `<button class="famdo-btn famdo-btn-primary" data-action="retry" data-id="${chore.id}">
+        <ha-icon icon="mdi:refresh"></ha-icon> Retry
+      </button>`;
+    } else if (chore.status === 'awaiting_approval') {
+      actionBtn = `<span style="color: var(--famdo-text-secondary); font-size: 0.85rem;">Awaiting approval</span>`;
+    }
 
     return `
       <div class="today-item chore ${urgencyClass}">
@@ -1305,8 +1347,486 @@ class FamDoTodayCard extends FamDoBaseCard {
           </div>
           <div class="today-item-meta">${chore.points} pts${chore.due_time ? ` - Due ${chore.due_time}` : ''}</div>
         </div>
+        <div class="today-item-actions">
+          ${actionBtn}
+        </div>
       </div>
     `;
+  }
+
+  _attachEventListeners() {
+    this.shadowRoot.querySelectorAll('[data-action]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const action = btn.dataset.action;
+        const choreId = btn.dataset.id;
+
+        if (action === 'claim') {
+          await this._claimChore(choreId);
+        } else if (action === 'complete') {
+          await this._completeChore(choreId);
+        } else if (action === 'retry') {
+          await this._retryChore(choreId);
+        }
+      });
+    });
+  }
+
+  async _claimChore(choreId) {
+    if (!this._selectedMemberId) return;
+
+    const result = await this._sendCommand('famdo/claim_chore', {
+      chore_id: choreId,
+      member_id: this._selectedMemberId
+    });
+
+    if (result) {
+      this._showToast('Chore claimed!', 'success');
+    }
+  }
+
+  async _completeChore(choreId) {
+    if (!this._selectedMemberId) return;
+
+    const chore = this._data?.chores?.find(c => c.id === choreId);
+
+    // If chore is pending/overdue and not claimed, claim it first
+    if (chore && (chore.status === 'pending' || chore.status === 'overdue') && !chore.claimed_by) {
+      await this._sendCommand('famdo/claim_chore', {
+        chore_id: choreId,
+        member_id: this._selectedMemberId
+      });
+    }
+
+    const result = await this._sendCommand('famdo/complete_chore', {
+      chore_id: choreId,
+      member_id: this._selectedMemberId
+    });
+
+    if (result) {
+      this._showToast('Nice work! Chore submitted for approval.', 'success');
+    }
+  }
+
+  async _retryChore(choreId) {
+    if (!this._selectedMemberId) return;
+
+    const result = await this._sendCommand('famdo/retry_chore', {
+      chore_id: choreId,
+      member_id: this._selectedMemberId
+    });
+
+    if (result) {
+      this._showToast('Chore ready to retry!', 'success');
+    }
+  }
+
+  getCardSize() {
+    return 4;
+  }
+}
+
+// ==================== Activity Log Card (Parent Admin View) ====================
+
+class FamDoActivityLogCard extends FamDoBaseCard {
+  setConfig(config) {
+    super.setConfig(config);
+    this._config = {
+      title: 'Activity Log',
+      days: 7,  // Show last 7 days by default
+      show_approvals: true,
+      show_rewards: true,
+      ...config
+    };
+  }
+
+  _render() {
+    if (!this._data) {
+      this.shadowRoot.innerHTML = '<ha-card><div class="famdo-card">Loading...</div></ha-card>';
+      return;
+    }
+
+    const now = new Date();
+    const daysAgo = new Date(now.getTime() - (this._config.days * 24 * 60 * 60 * 1000));
+
+    // Get completed chores from the last N days
+    const completedChores = (this._data.chores || [])
+      .filter(c => !c.is_template && c.status === 'completed')
+      .filter(c => {
+        if (!c.completed_at) return false;
+        const completedDate = new Date(c.completed_at);
+        return completedDate >= daysAgo;
+      })
+      .sort((a, b) => new Date(b.completed_at) - new Date(a.completed_at));
+
+    // Get chores awaiting approval
+    const awaitingApproval = (this._data.chores || [])
+      .filter(c => !c.is_template && c.status === 'awaiting_approval')
+      .sort((a, b) => new Date(b.completed_at || 0) - new Date(a.completed_at || 0));
+
+    // Get rejected chores
+    const rejected = (this._data.chores || [])
+      .filter(c => !c.is_template && c.status === 'rejected')
+      .sort((a, b) => new Date(b.completed_at || 0) - new Date(a.completed_at || 0));
+
+    // Get recent reward claims
+    const recentClaims = this._config.show_rewards ? (this._data.reward_claims || [])
+      .filter(c => {
+        const claimDate = new Date(c.claimed_at);
+        return claimDate >= daysAgo;
+      })
+      .sort((a, b) => new Date(b.claimed_at) - new Date(a.claimed_at))
+      .slice(0, 10) : [];
+
+    this.shadowRoot.innerHTML = `
+      <style>${KIOSK_STYLES}
+        .log-section {
+          margin-bottom: 20px;
+        }
+
+        .log-section-title {
+          font-size: 0.9rem;
+          font-weight: 600;
+          color: var(--famdo-text-secondary);
+          text-transform: uppercase;
+          letter-spacing: 1px;
+          margin-bottom: 12px;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .log-section-title.pending {
+          color: var(--famdo-warning);
+        }
+
+        .log-section-title.rejected {
+          color: var(--famdo-danger);
+        }
+
+        .log-section-title .count {
+          background: var(--famdo-primary);
+          color: #fff;
+          padding: 2px 8px;
+          border-radius: 10px;
+          font-size: 0.8rem;
+        }
+
+        .log-section-title.pending .count {
+          background: var(--famdo-warning);
+          color: #000;
+        }
+
+        .log-section-title.rejected .count {
+          background: var(--famdo-danger);
+        }
+
+        .log-item {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 12px;
+          background: rgba(255,255,255,0.05);
+          border-radius: var(--famdo-border-radius);
+          margin-bottom: 8px;
+        }
+
+        .log-item.approval {
+          border-left: 4px solid var(--famdo-warning);
+          background: rgba(255, 234, 167, 0.1);
+        }
+
+        .log-item.rejected {
+          border-left: 4px solid var(--famdo-danger);
+          background: rgba(255, 107, 107, 0.1);
+        }
+
+        .log-item.completed {
+          border-left: 4px solid var(--famdo-success);
+        }
+
+        .log-item.reward {
+          border-left: 4px solid var(--famdo-info);
+        }
+
+        .log-item-avatar {
+          width: 40px;
+          height: 40px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+
+        .log-item-avatar ha-icon {
+          --mdc-icon-size: 24px;
+          color: #fff;
+        }
+
+        .log-item-info {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .log-item-title {
+          font-weight: 500;
+          color: var(--famdo-text);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .log-item-meta {
+          font-size: 0.85rem;
+          color: var(--famdo-text-secondary);
+        }
+
+        .log-item-points {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          color: var(--famdo-warning);
+          font-weight: 500;
+        }
+
+        .log-item-actions {
+          display: flex;
+          gap: 8px;
+        }
+
+        .log-item-actions .famdo-btn {
+          padding: 6px 12px;
+          font-size: 0.85rem;
+        }
+
+        .log-time {
+          font-size: 0.75rem;
+          color: var(--famdo-text-secondary);
+          text-align: right;
+          min-width: 60px;
+        }
+      </style>
+      <ha-card>
+        <div class="famdo-card">
+          <div class="famdo-card-header">
+            <h2 class="famdo-card-title">
+              <ha-icon icon="mdi:clipboard-list"></ha-icon>
+              ${this._config.title}
+            </h2>
+          </div>
+
+          ${awaitingApproval.length > 0 ? `
+            <div class="log-section">
+              <div class="log-section-title pending">
+                <ha-icon icon="mdi:clock-alert"></ha-icon>
+                Awaiting Approval
+                <span class="count">${awaitingApproval.length}</span>
+              </div>
+              ${awaitingApproval.map(c => this._renderApprovalItem(c)).join('')}
+            </div>
+          ` : ''}
+
+          ${rejected.length > 0 ? `
+            <div class="log-section">
+              <div class="log-section-title rejected">
+                <ha-icon icon="mdi:close-circle"></ha-icon>
+                Rejected
+                <span class="count">${rejected.length}</span>
+              </div>
+              ${rejected.map(c => this._renderRejectedItem(c)).join('')}
+            </div>
+          ` : ''}
+
+          ${completedChores.length > 0 ? `
+            <div class="log-section">
+              <div class="log-section-title">
+                <ha-icon icon="mdi:check-circle"></ha-icon>
+                Recently Completed
+                <span class="count">${completedChores.length}</span>
+              </div>
+              ${completedChores.slice(0, 20).map(c => this._renderCompletedItem(c)).join('')}
+            </div>
+          ` : ''}
+
+          ${recentClaims.length > 0 ? `
+            <div class="log-section">
+              <div class="log-section-title">
+                <ha-icon icon="mdi:gift"></ha-icon>
+                Recent Rewards
+              </div>
+              ${recentClaims.map(c => this._renderRewardClaim(c)).join('')}
+            </div>
+          ` : ''}
+
+          ${awaitingApproval.length === 0 && rejected.length === 0 && completedChores.length === 0 && recentClaims.length === 0 ? `
+            <div class="famdo-empty">
+              <ha-icon icon="mdi:check-all"></ha-icon>
+              <p>No activity in the last ${this._config.days} days</p>
+            </div>
+          ` : ''}
+        </div>
+      </ha-card>
+    `;
+
+    this._attachEventListeners();
+  }
+
+  _renderApprovalItem(chore) {
+    const member = this._getMember(chore.claimed_by);
+    const timeAgo = this._formatTimeAgo(chore.completed_at);
+
+    return `
+      <div class="log-item approval">
+        <div class="log-item-avatar" style="background: ${member?.color || '#4ECDC4'}">
+          <ha-icon icon="${member?.avatar || 'mdi:account'}"></ha-icon>
+        </div>
+        <div class="log-item-info">
+          <div class="log-item-title">${chore.name}</div>
+          <div class="log-item-meta">${member?.name || 'Unknown'}</div>
+        </div>
+        <div class="log-item-points">
+          <ha-icon icon="mdi:star"></ha-icon>
+          ${chore.points}
+        </div>
+        <div class="log-item-actions">
+          <button class="famdo-btn famdo-btn-success" data-action="approve" data-id="${chore.id}">
+            <ha-icon icon="mdi:check"></ha-icon>
+          </button>
+          <button class="famdo-btn famdo-btn-danger" data-action="reject" data-id="${chore.id}">
+            <ha-icon icon="mdi:close"></ha-icon>
+          </button>
+        </div>
+        <div class="log-time">${timeAgo}</div>
+      </div>
+    `;
+  }
+
+  _renderRejectedItem(chore) {
+    const member = this._getMember(chore.claimed_by);
+    const timeAgo = this._formatTimeAgo(chore.completed_at);
+
+    return `
+      <div class="log-item rejected">
+        <div class="log-item-avatar" style="background: ${member?.color || '#4ECDC4'}">
+          <ha-icon icon="${member?.avatar || 'mdi:account'}"></ha-icon>
+        </div>
+        <div class="log-item-info">
+          <div class="log-item-title">${chore.name}</div>
+          <div class="log-item-meta">${member?.name || 'Unknown'} - Rejected</div>
+        </div>
+        <div class="log-item-points">
+          <ha-icon icon="mdi:star"></ha-icon>
+          ${chore.points}
+        </div>
+        <div class="log-time">${timeAgo}</div>
+      </div>
+    `;
+  }
+
+  _renderCompletedItem(chore) {
+    const member = this._getMember(chore.claimed_by);
+    const approver = this._getMember(chore.approved_by);
+    const timeAgo = this._formatTimeAgo(chore.completed_at);
+
+    return `
+      <div class="log-item completed">
+        <div class="log-item-avatar" style="background: ${member?.color || '#4ECDC4'}">
+          <ha-icon icon="${member?.avatar || 'mdi:account'}"></ha-icon>
+        </div>
+        <div class="log-item-info">
+          <div class="log-item-title">${chore.name}</div>
+          <div class="log-item-meta">${member?.name || 'Unknown'}${approver ? ` • Approved by ${approver.name}` : ''}</div>
+        </div>
+        <div class="log-item-points">
+          <ha-icon icon="mdi:star"></ha-icon>
+          +${chore.points}
+        </div>
+        <div class="log-time">${timeAgo}</div>
+      </div>
+    `;
+  }
+
+  _renderRewardClaim(claim) {
+    const member = this._getMember(claim.member_id);
+    const reward = (this._data.rewards || []).find(r => r.id === claim.reward_id);
+    const timeAgo = this._formatTimeAgo(claim.claimed_at);
+
+    return `
+      <div class="log-item reward">
+        <div class="log-item-avatar" style="background: ${member?.color || '#4ECDC4'}">
+          <ha-icon icon="${member?.avatar || 'mdi:account'}"></ha-icon>
+        </div>
+        <div class="log-item-info">
+          <div class="log-item-title">${reward?.name || 'Unknown Reward'}</div>
+          <div class="log-item-meta">${member?.name || 'Unknown'}</div>
+        </div>
+        <div class="log-item-points" style="color: var(--famdo-danger);">
+          <ha-icon icon="mdi:star"></ha-icon>
+          -${claim.points_spent}
+        </div>
+        <div class="log-time">${timeAgo}</div>
+      </div>
+    `;
+  }
+
+  _formatTimeAgo(dateStr) {
+    if (!dateStr) return '';
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  }
+
+  _attachEventListeners() {
+    this.shadowRoot.querySelectorAll('[data-action]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const action = btn.dataset.action;
+        const choreId = btn.dataset.id;
+
+        if (action === 'approve') {
+          await this._approveChore(choreId);
+        } else if (action === 'reject') {
+          await this._rejectChore(choreId);
+        }
+      });
+    });
+  }
+
+  async _approveChore(choreId) {
+    // Get current HA user as approver (parent)
+    const result = await this._sendCommand('famdo/approve_chore', {
+      chore_id: choreId,
+      approver_id: this._getParentId()
+    });
+
+    if (result) {
+      this._showToast('Chore approved!', 'success');
+    }
+  }
+
+  async _rejectChore(choreId) {
+    const result = await this._sendCommand('famdo/reject_chore', {
+      chore_id: choreId,
+      approver_id: this._getParentId()
+    });
+
+    if (result) {
+      this._showToast('Chore rejected', 'info');
+    }
+  }
+
+  _getParentId() {
+    // Find first parent in the data
+    const parent = (this._data.members || []).find(m => m.role === 'parent');
+    return parent?.id || null;
   }
 
   getCardSize() {
@@ -1321,6 +1841,7 @@ customElements.define('famdo-chores-card', FamDoChoresCard);
 customElements.define('famdo-points-card', FamDoPointsCard);
 customElements.define('famdo-rewards-card', FamDoRewardsCard);
 customElements.define('famdo-today-card', FamDoTodayCard);
+customElements.define('famdo-activity-log', FamDoActivityLogCard);
 
 // Register with HACS/Lovelace
 window.customCards = window.customCards || [];
@@ -1353,6 +1874,12 @@ window.customCards.push(
     type: 'famdo-today-card',
     name: 'FamDo Today',
     description: 'Show today\'s schedule',
+    preview: true
+  },
+  {
+    type: 'famdo-activity-log',
+    name: 'FamDo Activity Log',
+    description: 'Parent admin view for approvals and activity history',
     preview: true
   }
 );

@@ -2,7 +2,7 @@
 from typing import Final
 
 DOMAIN: Final = "famdo"
-VERSION: Final = "1.4.4"
+VERSION: Final = "1.4.5"
 
 # Configuration keys
 CONF_FAMILY_NAME: Final = "family_name"
