@@ -1,19 +1,19 @@
 /**
- * FamDo - Family Dashboard Application
- * Touch-optimized Home Assistant integration
+ * FamDo Admin Console
+ * Home Assistant integration management interface
  */
 
-class FamDoApp {
+class FamDoAdminApp {
     constructor() {
         this.data = null;
-        this.selectedMember = null;
-        this.currentTab = 'chores';
-        this.currentMonth = new Date();
+        this.currentTab = 'dashboard';
+        this.currentSubTab = {};
         this.connection = null;
         this.subscriptionId = null;
-        this.messageId = 1;  // Incrementing WebSocket message ID
-        this.haCalendars = [];  // Available Home Assistant calendar entities
-        this.haCalendarEvents = [];  // Cached HA calendar events for current month
+        this.messageId = 1;
+        this.haCalendars = [];
+        this.selectedChores = new Set();
+        this.selectedClaims = new Set();
 
         this.init();
     }
@@ -25,7 +25,7 @@ class FamDoApp {
             await this.loadData();
             this.render();
         } catch (error) {
-            console.error('Failed to initialize FamDo:', error);
+            console.error('Failed to initialize FamDo Admin:', error);
             this.showToast('Failed to connect to Home Assistant', 'error');
         }
     }
@@ -34,17 +34,14 @@ class FamDoApp {
 
     async connectToHA() {
         return new Promise((resolve, reject) => {
-            // Get auth token from HA
             const hassUrl = window.location.origin;
 
-            // Try to get existing connection
             if (window.hassConnection) {
                 this.connection = window.hassConnection;
                 resolve();
                 return;
             }
 
-            // Create WebSocket connection
             const wsUrl = `${hassUrl.replace('http', 'ws')}/api/websocket`;
             this.ws = new WebSocket(wsUrl);
 
@@ -64,7 +61,6 @@ class FamDoApp {
 
             this.ws.onclose = () => {
                 console.log('WebSocket closed');
-                // Attempt reconnect after delay
                 setTimeout(() => this.connectToHA(), 5000);
             };
         });
@@ -100,12 +96,10 @@ class FamDoApp {
     }
 
     authenticate() {
-        // Try to get token from URL or localStorage
         const urlParams = new URLSearchParams(window.location.search);
         let token = urlParams.get('auth');
 
         if (!token) {
-            // Try to get from localStorage (set by HA)
             token = localStorage.getItem('hassTokens');
             if (token) {
                 try {
@@ -118,13 +112,10 @@ class FamDoApp {
         }
 
         if (!token) {
-            // Use long-lived access token if available in HA frontend
             token = window.__tokenCache?.access_token;
         }
 
-        // For iframe in HA, we can use the built-in auth
         if (!token && window.parent !== window) {
-            // We're in an iframe, try to get auth from parent
             try {
                 const hassAuth = window.parent.document.querySelector('home-assistant')?.hass;
                 if (hassAuth?.auth?.accessToken) {
@@ -180,18 +171,15 @@ class FamDoApp {
     async loadData() {
         try {
             this.data = await this.sendCommand('famdo/get_data');
-            // Load available HA calendars
             await this.loadHACalendars();
         } catch (error) {
             console.error('Failed to load data:', error);
-            // Initialize with empty data
             this.data = {
                 family_name: 'My Family',
                 members: [],
                 chores: [],
                 rewards: [],
-                todos: [],
-                events: [],
+                reward_claims: [],
                 settings: {}
             };
         }
@@ -207,779 +195,1279 @@ class FamDoApp {
         }
     }
 
-    async loadHACalendarEvents() {
-        const selectedCalendars = this.data.settings?.selected_calendars || [];
-        if (selectedCalendars.length === 0) {
-            this.haCalendarEvents = [];
-            return;
-        }
-
-        const year = this.currentMonth.getFullYear();
-        const month = this.currentMonth.getMonth();
-        // Use local timezone dates - create start/end as ISO strings with timezone offset
-        const startDate = new Date(year, month, 1);
-        const endDate = new Date(year, month + 1, 0, 23, 59, 59);
-        // Format with timezone offset to preserve local time interpretation
-        const start = startDate.toISOString();
-        const end = endDate.toISOString();
-
-        const allEvents = [];
-        for (const entityId of selectedCalendars) {
-            try {
-                const result = await this.sendCommand('famdo/get_ha_calendar_events', {
-                    entity_id: entityId,
-                    start: start,
-                    end: end
-                });
-                const calendar = this.haCalendars.find(c => c.entity_id === entityId);
-                (result.events || []).forEach(event => {
-                    allEvents.push({
-                        ...event,
-                        calendar_name: calendar?.name || entityId,
-                        entity_id: entityId
-                    });
-                });
-            } catch (error) {
-                console.error(`Failed to load events from ${entityId}:`, error);
-            }
-        }
-        this.haCalendarEvents = allEvents;
-    }
-
-    // ==================== Rendering ====================
+    // ==================== Main Render ====================
 
     render() {
         if (!this.data) return;
 
-        document.getElementById('family-name').textContent = this.data.family_name || 'FamDo';
-        this.renderMembers();
-        this.renderChores();
-        this.renderRewards();
-        this.renderTodos();
-        this.renderCalendar();
+        // Update family name
+        document.getElementById('family-name').textContent = this.data.family_name || 'My Family';
 
-        // Update parent/child specific visibility
-        const isParent = this.selectedMember?.role === 'parent';
-        document.body.classList.toggle('is-parent', isParent);
-    }
+        // Update nav badges
+        this.updateNavBadges();
 
-    renderMembers() {
-        const container = document.getElementById('member-selector');
-        let html = '';
+        // Render current tab content
+        this.renderCurrentTab();
 
-        this.data.members.forEach(member => {
-            const isSelected = this.selectedMember?.id === member.id;
-            html += `
-                <div class="member-card ${isSelected ? 'selected' : ''}" data-member-id="${member.id}">
-                    <button class="member-edit-btn" data-action="edit" aria-label="Edit ${member.name}">
-                        <span class="mdi mdi-pencil"></span>
-                    </button>
-                    <div class="member-avatar" style="background: ${member.color}">
-                        <span class="mdi ${member.avatar}"></span>
-                    </div>
-                    <span class="member-name">${member.name}</span>
-                    <span class="member-points">${member.points} pts</span>
-                </div>
-            `;
-        });
-
-        // Add member button
-        html += `
-            <div class="member-card add-member-card" id="add-member-card">
-                <span class="mdi mdi-plus"></span>
-                <span class="member-name">Add</span>
-            </div>
-        `;
-
-        container.innerHTML = html;
-
-        // Auto-select first member if none selected
-        if (!this.selectedMember && this.data.members.length > 0) {
-            this.selectedMember = this.data.members[0];
-            this.render();
+        // Update settings form if on settings tab
+        if (this.currentTab === 'settings') {
+            this.populateSettingsForm();
         }
     }
 
-    renderChores() {
-        const container = document.getElementById('chores-list');
-        const filter = document.querySelector('.chore-filters .filter-btn.active')?.dataset.filter || 'all';
+    updateNavBadges() {
+        const pendingApprovals = this.data.chores.filter(c => c.status === 'awaiting_approval' && !c.is_template).length;
+        const pendingRewards = (this.data.reward_claims || []).filter(c => c.status === 'pending').length;
 
-        let chores = [...this.data.chores];
+        document.getElementById('members-count').textContent = this.data.members.length;
 
-        // Filter out template chores (only show instances)
-        chores = chores.filter(c => !c.is_template);
+        const choresBadge = document.getElementById('chores-pending');
+        choresBadge.textContent = pendingApprovals;
+        choresBadge.classList.toggle('pending', pendingApprovals > 0);
 
-        // Apply filter
-        if (filter !== 'all') {
-            chores = chores.filter(c => c.status === filter);
-        }
-
-        // Filter by assignment if not a parent
-        if (this.selectedMember?.role !== 'parent') {
-            chores = chores.filter(c =>
-                !c.assigned_to || c.assigned_to === this.selectedMember?.id
-            );
-        }
-
-        if (chores.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <span class="mdi mdi-broom"></span>
-                    <h3>No chores</h3>
-                    <p>All caught up! Add some chores to get started.</p>
-                </div>
-            `;
-            return;
-        }
-
-        let html = '';
-        chores.forEach(chore => {
-            const assignedMember = this.data.members.find(m => m.id === chore.assigned_to);
-            const claimedMember = this.data.members.find(m => m.id === chore.claimed_by);
-            const isRecurring = chore.template_id || chore.recurrence !== 'none';
-
-            html += `
-                <div class="chore-card" data-chore-id="${chore.id}">
-                    <div class="chore-header">
-                        <div class="chore-icon" style="background: ${assignedMember?.color || '#4ECDC4'}">
-                            <span class="mdi ${chore.icon}"></span>
-                        </div>
-                        <div class="chore-info">
-                            <div class="chore-name">
-                                ${chore.name}
-                                ${isRecurring ? `<span class="mdi mdi-refresh recurring-badge" title="Recurring chore"></span>` : ''}
-                            </div>
-                            ${chore.description ? `<div class="chore-description">${chore.description}</div>` : ''}
-                        </div>
-                    </div>
-                    <div class="chore-meta">
-                        <div class="chore-points">
-                            <span class="mdi mdi-star"></span>
-                            ${chore.points} pts
-                            ${chore.negative_points > 0 ? `<span class="negative-points">(-${chore.negative_points})</span>` : ''}
-                        </div>
-                        <span class="chore-status ${chore.status}">${this.formatStatus(chore.status)}</span>
-                    </div>
-                    ${chore.due_date ? `
-                        <div class="chore-due">
-                            <span class="mdi mdi-clock-outline"></span>
-                            Due: ${this.formatDate(chore.due_date)}${chore.due_time ? ` at ${chore.due_time}` : ''}
-                        </div>
-                    ` : ''}
-                    ${assignedMember ? `
-                        <div class="assigned-member">
-                            <span class="member-dot" style="background: ${assignedMember.color}"></span>
-                            ${assignedMember.name}
-                        </div>
-                    ` : ''}
-                    ${this.renderChoreActions(chore, claimedMember)}
-                </div>
-            `;
-        });
-
-        container.innerHTML = html;
+        const rewardsBadge = document.getElementById('rewards-pending');
+        rewardsBadge.textContent = pendingRewards;
+        rewardsBadge.classList.toggle('pending', pendingRewards > 0);
     }
 
-    renderChoreActions(chore, claimedMember) {
-        const isParent = this.selectedMember?.role === 'parent';
-        const isMine = chore.claimed_by === this.selectedMember?.id;
-        const isAssignedToMe = chore.assigned_to === this.selectedMember?.id;
-        const isUnassigned = !chore.assigned_to;
-
-        let actions = '';
-
-        switch (chore.status) {
-            case 'pending':
-            case 'overdue':
-                if (isAssignedToMe) {
-                    // Assigned to me - show Mark Done directly (will auto-claim)
-                    actions = `
-                        <div class="chore-actions">
-                            <button class="chore-action-btn success" data-action="complete">
-                                <span class="mdi mdi-check"></span> Mark Done
-                            </button>
-                        </div>
-                    `;
-                } else if (isUnassigned) {
-                    // Unassigned - show Claim button
-                    actions = `
-                        <div class="chore-actions">
-                            <button class="chore-action-btn primary" data-action="claim">
-                                <span class="mdi mdi-hand-back-right"></span> Claim
-                            </button>
-                        </div>
-                    `;
-                }
+    renderCurrentTab() {
+        switch (this.currentTab) {
+            case 'dashboard':
+                this.renderDashboard();
                 break;
-
-            case 'claimed':
-                if (isMine) {
-                    actions = `
-                        <div class="chore-actions">
-                            <button class="chore-action-btn success" data-action="complete">
-                                <span class="mdi mdi-check"></span> Mark Done
-                            </button>
-                        </div>
-                    `;
-                } else if (claimedMember) {
-                    actions = `<div class="assigned-member">In progress: ${claimedMember.name}</div>`;
-                }
+            case 'members':
+                this.renderMembersTable();
                 break;
-
-            case 'awaiting_approval':
-                if (isParent) {
-                    actions = `
-                        <div class="chore-actions">
-                            <button class="chore-action-btn success" data-action="approve">
-                                <span class="mdi mdi-check"></span> Approve
-                            </button>
-                            <button class="chore-action-btn danger" data-action="reject">
-                                <span class="mdi mdi-close"></span> Reject
-                            </button>
-                        </div>
-                    `;
-                } else {
-                    actions = `<div class="assigned-member">Waiting for approval...</div>`;
-                }
+            case 'chores':
+                this.renderChoresTab();
                 break;
-
-            case 'completed':
-                actions = `
-                    <div class="assigned-member">
-                        <span class="mdi mdi-check-circle" style="color: var(--success)"></span>
-                        Completed${claimedMember ? ` by ${claimedMember.name}` : ''}
-                    </div>
-                `;
+            case 'rewards':
+                this.renderRewardsTab();
                 break;
-
-            case 'rejected':
-                if (isMine) {
-                    actions = `
-                        <div class="chore-actions">
-                            <button class="chore-action-btn primary" data-action="retry">
-                                <span class="mdi mdi-refresh"></span> Try Again
-                            </button>
-                        </div>
-                    `;
-                } else {
-                    actions = `<div class="assigned-member" style="color: var(--danger);">
-                        <span class="mdi mdi-close-circle"></span>
-                        Rejected${claimedMember ? ` - ${claimedMember.name}` : ''}
-                    </div>`;
-                }
+            case 'settings':
+                this.renderCalendarSources();
                 break;
         }
-
-        return actions;
     }
 
-    renderRewards() {
-        const container = document.getElementById('rewards-list');
-
-        if (this.data.rewards.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <span class="mdi mdi-gift"></span>
-                    <h3>No rewards</h3>
-                    <p>Add some rewards to motivate the family!</p>
-                </div>
-            `;
-            return;
-        }
-
-        let html = '';
-        this.data.rewards.forEach(reward => {
-            const canAfford = this.selectedMember && this.selectedMember.points >= reward.points_cost;
-
-            html += `
-                <div class="reward-card" data-reward-id="${reward.id}">
-                    <div class="reward-icon">
-                        <span class="mdi ${reward.icon}"></span>
-                    </div>
-                    <div class="reward-name">${reward.name}</div>
-                    ${reward.description ? `<div class="reward-description">${reward.description}</div>` : ''}
-                    <div class="reward-cost">
-                        <span class="mdi mdi-star"></span>
-                        ${reward.points_cost}
-                    </div>
-                    <button class="reward-claim-btn" data-action="claim" ${!canAfford ? 'disabled' : ''}>
-                        ${canAfford ? 'Claim Reward' : `Need ${reward.points_cost - (this.selectedMember?.points || 0)} more`}
-                    </button>
-                </div>
-            `;
-        });
-
-        container.innerHTML = html;
-    }
-
-    renderTodos() {
-        const container = document.getElementById('todos-list');
-        const filter = document.querySelector('.todo-filters .filter-btn.active')?.dataset.filter || 'active';
-
-        let todos = [...this.data.todos];
-
-        // Apply filter
-        switch (filter) {
-            case 'active':
-                todos = todos.filter(t => !t.completed);
-                break;
-            case 'completed':
-                todos = todos.filter(t => t.completed);
-                break;
-        }
-
-        // Filter by assignment
-        if (this.selectedMember) {
-            todos = todos.filter(t =>
-                !t.assigned_to || t.assigned_to === this.selectedMember.id
-            );
-        }
-
-        if (todos.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <span class="mdi mdi-format-list-checks"></span>
-                    <h3>No todos</h3>
-                    <p>Add items to your family's todo list.</p>
-                </div>
-            `;
-            return;
-        }
-
-        let html = '';
-        todos.forEach(todo => {
-            const assignedMember = this.data.members.find(m => m.id === todo.assigned_to);
-
-            html += `
-                <div class="todo-item ${todo.completed ? 'completed' : ''}" data-todo-id="${todo.id}">
-                    <div class="todo-checkbox ${todo.completed ? 'checked' : ''}" data-action="toggle">
-                        ${todo.completed ? '<span class="mdi mdi-check"></span>' : ''}
-                    </div>
-                    <div class="todo-content">
-                        <div class="todo-title">${todo.title}</div>
-                        <div class="todo-meta">
-                            ${todo.due_date ? `<span><span class="mdi mdi-calendar"></span> ${this.formatDate(todo.due_date)}</span>` : ''}
-                            ${assignedMember ? `<span><span class="mdi mdi-account"></span> ${assignedMember.name}</span>` : ''}
-                            <span class="todo-priority ${todo.priority}">${todo.priority}</span>
-                        </div>
-                    </div>
-                </div>
-            `;
-        });
-
-        container.innerHTML = html;
-    }
-
-    async renderCalendar() {
-        const grid = document.getElementById('calendar-grid');
-        const monthLabel = document.getElementById('current-month');
-
-        const year = this.currentMonth.getFullYear();
-        const month = this.currentMonth.getMonth();
-
-        monthLabel.textContent = new Date(year, month).toLocaleDateString('en-US', {
-            month: 'long',
-            year: 'numeric'
-        });
-
-        // Load HA calendar events for this month
-        await this.loadHACalendarEvents();
-
-        // Get first day of month and total days
-        const firstDay = new Date(year, month, 1);
-        const lastDay = new Date(year, month + 1, 0);
-        const startDay = firstDay.getDay();
-        const totalDays = lastDay.getDate();
-
-        // Get internal FamDo events for this month
-        const monthEvents = this.data.events.filter(e => {
-            const eventDate = new Date(e.start_date);
-            return eventDate.getMonth() === month && eventDate.getFullYear() === year;
-        });
-
-        // Get chores with due dates this month
-        const monthChores = this.data.chores.filter(c => {
-            if (!c.due_date) return false;
-            const choreDate = new Date(c.due_date);
-            return choreDate.getMonth() === month && choreDate.getFullYear() === year;
-        });
-
-        // Helper to get HA events for a specific date (using local timezone)
-        const getHAEventsForDate = (dateStr) => {
-            return this.haCalendarEvents.filter(e => {
-                if (!e.start) return false;
-                const eventDate = this.parseToLocalDate(e.start);
-                return eventDate === dateStr;
-            });
-        };
-
-        let html = '';
-
-        // Day headers
-        const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-        dayNames.forEach(day => {
-            html += `<div class="calendar-day-header">${day}</div>`;
-        });
-
-        // Previous month days
-        const prevMonth = new Date(year, month, 0);
-        for (let i = startDay - 1; i >= 0; i--) {
-            const day = prevMonth.getDate() - i;
-            html += `<div class="calendar-day other-month"><span class="calendar-day-number">${day}</span></div>`;
-        }
-
-        // Current month days
-        const today = new Date();
-        for (let day = 1; day <= totalDays; day++) {
-            const isToday = today.getDate() === day && today.getMonth() === month && today.getFullYear() === year;
-            const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-
-            const dayEvents = monthEvents.filter(e => e.start_date === dateStr);
-            const dayChores = monthChores.filter(c => c.due_date === dateStr);
-            const dayHAEvents = getHAEventsForDate(dateStr);
-
-            html += `
-                <div class="calendar-day ${isToday ? 'today' : ''}" data-date="${dateStr}">
-                    <span class="calendar-day-number">${day}</span>
-                    <div class="calendar-day-events">
-                        ${dayEvents.map(e => {
-                            const member = this.data.members.find(m => e.member_ids?.includes(m.id));
-                            return `<div class="calendar-event-dot" style="background: ${e.color || member?.color || '#4ECDC4'}" title="${e.title}"></div>`;
-                        }).join('')}
-                        ${dayChores.map(c => {
-                            const member = this.data.members.find(m => m.id === c.assigned_to);
-                            return `<div class="calendar-event-dot" style="background: ${member?.color || '#FF6B6B'}" title="${c.name}"></div>`;
-                        }).join('')}
-                        ${dayHAEvents.map(e => {
-                            const color = this.getCalendarColor(e.entity_id);
-                            return `<div class="calendar-event-dot ha-event" style="background: ${color}" title="${e.summary} (${e.calendar_name})"></div>`;
-                        }).join('')}
-                    </div>
-                </div>
-            `;
-        }
-
-        // Next month days
-        const remainingDays = 42 - (startDay + totalDays);
-        for (let day = 1; day <= remainingDays; day++) {
-            html += `<div class="calendar-day other-month"><span class="calendar-day-number">${day}</span></div>`;
-        }
-
-        grid.innerHTML = html;
-
-        // Render upcoming events list
-        this.renderUpcomingEvents();
-    }
-
-    renderUpcomingEvents() {
-        const container = document.getElementById('events-list');
-        const today = this.formatDateLocal(new Date());
-
-        // FamDo internal events
-        const upcomingInternal = this.data.events
-            .filter(e => e.start_date >= today)
-            .map(e => ({
-                ...e,
-                source: 'famdo',
-                sortDate: e.start_date
-            }));
-
-        // HA calendar events (parse dates to local timezone)
-        const upcomingHA = this.haCalendarEvents
-            .filter(e => e.start && this.parseToLocalDate(e.start) >= today)
-            .map(e => ({
-                id: e.uid || `ha-${e.start}`,
-                title: e.summary,
-                start_date: this.parseToLocalDate(e.start),
-                start_time: this.parseToLocalTime(e.start),
-                location: e.location,
-                color: this.getCalendarColor(e.entity_id),
-                source: 'ha',
-                calendar_name: e.calendar_name,
-                sortDate: this.parseToLocalDate(e.start)
-            }));
-
-        const upcoming = [...upcomingInternal, ...upcomingHA]
-            .sort((a, b) => a.sortDate.localeCompare(b.sortDate))
-            .slice(0, 8);
-
-        if (upcoming.length === 0) {
-            container.innerHTML = `<div class="empty-state"><p>No upcoming events</p></div>`;
-            return;
-        }
-
-        let html = '';
-        upcoming.forEach(event => {
-            const isHA = event.source === 'ha';
-            html += `
-                <div class="event-item ${isHA ? 'ha-event' : ''}" ${!isHA ? `data-event-id="${event.id}"` : ''} style="border-color: ${event.color || '#4ECDC4'}">
-                    <div class="event-time">
-                        ${this.formatDate(event.start_date)}
-                        ${event.start_time ? `<br>${event.start_time}` : ''}
-                    </div>
-                    <div class="event-details">
-                        <div class="event-title">${event.title}</div>
-                        ${event.location ? `<div class="event-location"><span class="mdi mdi-map-marker"></span> ${event.location}</div>` : ''}
-                        ${isHA ? `<div class="event-source"><span class="mdi mdi-calendar-sync"></span> ${event.calendar_name}</div>` : ''}
-                    </div>
-                </div>
-            `;
-        });
-
-        container.innerHTML = html;
-    }
-
-    // ==================== Event Listeners ====================
+    // ==================== Navigation ====================
 
     setupEventListeners() {
-        // Tab navigation
-        document.querySelectorAll('.tab-btn').forEach(btn => {
-            btn.addEventListener('click', () => this.switchTab(btn.dataset.tab));
+        // Sidebar navigation
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const tab = item.dataset.tab;
+                this.switchTab(tab);
+            });
         });
 
-        // Member selection
-        document.getElementById('member-selector').addEventListener('click', (e) => {
-            const memberCard = e.target.closest('.member-card');
-            if (!memberCard) return;
-
-            // Check if edit button was clicked
-            const editBtn = e.target.closest('.member-edit-btn');
-            if (editBtn) {
-                e.stopPropagation();
-                const memberId = memberCard.dataset.memberId;
-                this.showEditMemberModal(memberId);
-                return;
-            }
-
-            if (memberCard.id === 'add-member-card') {
-                this.showAddMemberModal();
-            } else {
-                const memberId = memberCard.dataset.memberId;
-                this.selectedMember = this.data.members.find(m => m.id === memberId);
-                this.render();
-            }
+        // Mobile menu toggle
+        document.getElementById('menu-toggle')?.addEventListener('click', () => {
+            document.getElementById('sidebar').classList.toggle('open');
         });
 
-        // Chore filters
-        document.querySelector('.chore-filters')?.addEventListener('click', (e) => {
-            const btn = e.target.closest('.filter-btn');
-            if (!btn) return;
-            document.querySelectorAll('.chore-filters .filter-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            this.renderChores();
-        });
-
-        // Todo filters
-        document.querySelector('.todo-filters')?.addEventListener('click', (e) => {
-            const btn = e.target.closest('.filter-btn');
-            if (!btn) return;
-            document.querySelectorAll('.todo-filters .filter-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            this.renderTodos();
-        });
-
-        // Chore actions
-        document.getElementById('chores-list').addEventListener('click', (e) => {
-            const actionBtn = e.target.closest('[data-action]');
-            const choreCard = e.target.closest('.chore-card');
-            if (!choreCard) return;
-
-            const choreId = choreCard.dataset.choreId;
-
-            if (actionBtn) {
-                const action = actionBtn.dataset.action;
-                this.handleChoreAction(choreId, action);
-            } else {
-                // Show chore details modal
-                this.showChoreDetailsModal(choreId);
-            }
-        });
-
-        // Reward actions
-        document.getElementById('rewards-list').addEventListener('click', (e) => {
-            const actionBtn = e.target.closest('[data-action]');
-            const rewardCard = e.target.closest('.reward-card');
-            if (!rewardCard) return;
-
-            const rewardId = rewardCard.dataset.rewardId;
-
-            if (actionBtn && actionBtn.dataset.action === 'claim') {
-                this.claimReward(rewardId);
-            } else if (!actionBtn) {
-                this.showRewardDetailsModal(rewardId);
-            }
-        });
-
-        // Todo actions
-        document.getElementById('todos-list').addEventListener('click', (e) => {
-            const todoItem = e.target.closest('.todo-item');
-            if (!todoItem) return;
-
-            const todoId = todoItem.dataset.todoId;
-            const checkbox = e.target.closest('.todo-checkbox');
-
-            if (checkbox) {
-                this.toggleTodo(todoId);
-            } else {
-                this.showTodoDetailsModal(todoId);
-            }
-        });
-
-        // Add buttons
-        document.getElementById('add-chore-btn').addEventListener('click', () => this.showAddChoreModal());
-        document.getElementById('add-reward-btn').addEventListener('click', () => this.showAddRewardModal());
-        document.getElementById('add-todo-btn').addEventListener('click', () => this.showAddTodoModal());
-        document.getElementById('add-event-btn').addEventListener('click', () => this.showAddEventModal());
-
-        // Calendar navigation
-        document.getElementById('prev-month').addEventListener('click', () => {
-            this.currentMonth.setMonth(this.currentMonth.getMonth() - 1);
-            this.renderCalendar();
-        });
-
-        document.getElementById('next-month').addEventListener('click', () => {
-            this.currentMonth.setMonth(this.currentMonth.getMonth() + 1);
-            this.renderCalendar();
-        });
-
-        // Calendar day click
-        document.getElementById('calendar-grid').addEventListener('click', (e) => {
-            const dayCell = e.target.closest('.calendar-day:not(.other-month)');
-            if (dayCell && dayCell.dataset.date) {
-                this.showDayEventsModal(dayCell.dataset.date);
+        // Close mobile sidebar when clicking overlay
+        document.addEventListener('click', (e) => {
+            const sidebar = document.getElementById('sidebar');
+            const menuToggle = document.getElementById('menu-toggle');
+            if (sidebar.classList.contains('open') &&
+                !sidebar.contains(e.target) &&
+                e.target !== menuToggle &&
+                !menuToggle.contains(e.target)) {
+                sidebar.classList.remove('open');
             }
         });
 
         // Modal close
-        document.getElementById('modal-close').addEventListener('click', () => this.closeModal());
-        document.getElementById('modal-overlay').addEventListener('click', (e) => {
+        document.getElementById('modal-close')?.addEventListener('click', () => this.closeModal());
+        document.getElementById('modal-overlay')?.addEventListener('click', (e) => {
             if (e.target === e.currentTarget) this.closeModal();
         });
 
-        // Settings
-        document.getElementById('settings-btn').addEventListener('click', () => this.showSettingsModal());
+        // Drawer close
+        document.getElementById('drawer-close')?.addEventListener('click', () => this.closeDrawer());
+        document.getElementById('drawer-overlay')?.addEventListener('click', () => this.closeDrawer());
+
+        // Sub-tabs for chores
+        document.getElementById('chores-subtabs')?.addEventListener('click', (e) => {
+            const btn = e.target.closest('.sub-tab');
+            if (btn) {
+                this.switchSubTab('chores', btn.dataset.subtab);
+            }
+        });
+
+        // Sub-tabs for rewards
+        document.getElementById('rewards-subtabs')?.addEventListener('click', (e) => {
+            const btn = e.target.closest('.sub-tab');
+            if (btn) {
+                this.switchSubTab('rewards', btn.dataset.subtab);
+            }
+        });
+
+        // Chore status filter
+        document.getElementById('chore-status-filter')?.addEventListener('change', () => {
+            this.renderActiveChoresTable();
+        });
+
+        // Activity filter
+        document.getElementById('activity-filter')?.addEventListener('change', () => {
+            this.renderActivityFeed();
+        });
+
+        // Chore select all
+        document.getElementById('chore-select-all')?.addEventListener('change', (e) => {
+            this.toggleAllChoreSelection(e.target.checked);
+        });
+
+        // Claim select all
+        document.getElementById('claim-select-all')?.addEventListener('change', (e) => {
+            this.toggleAllClaimSelection(e.target.checked);
+        });
+
+        // Bulk approve
+        document.getElementById('bulk-approve-btn')?.addEventListener('click', () => {
+            this.bulkApproveChores();
+        });
+
+        // Bulk fulfill
+        document.getElementById('bulk-fulfill-btn')?.addEventListener('click', () => {
+            this.bulkFulfillClaims();
+        });
+
+        // Approve all on dashboard
+        document.getElementById('approve-all-btn')?.addEventListener('click', () => {
+            this.approveAllPending();
+        });
+
+        // Members table click
+        document.getElementById('members-tbody')?.addEventListener('click', (e) => {
+            const row = e.target.closest('tr');
+            if (!row) return;
+            const memberId = row.dataset.memberId;
+            if (memberId) {
+                this.showMemberDrawer(memberId);
+            }
+        });
+
+        // Chores table actions
+        document.getElementById('chores-tbody')?.addEventListener('click', (e) => {
+            this.handleChoreTableAction(e);
+        });
+
+        // Templates table actions
+        document.getElementById('templates-tbody')?.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-action]');
+            if (btn) {
+                const choreId = btn.closest('tr').dataset.choreId;
+                const action = btn.dataset.action;
+                if (action === 'edit') {
+                    this.showEditChoreModal(choreId);
+                } else if (action === 'delete') {
+                    this.deleteChore(choreId);
+                }
+            }
+        });
+
+        // Rewards table actions
+        document.getElementById('rewards-tbody')?.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-action]');
+            if (btn) {
+                const rewardId = btn.closest('tr').dataset.rewardId;
+                const action = btn.dataset.action;
+                if (action === 'edit') {
+                    this.showEditRewardModal(rewardId);
+                } else if (action === 'delete') {
+                    this.deleteReward(rewardId);
+                }
+            }
+        });
+
+        // Claims table actions
+        document.getElementById('claims-tbody')?.addEventListener('click', (e) => {
+            this.handleClaimTableAction(e);
+        });
+
+        // Settings form
+        document.getElementById('settings-form')?.addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.saveSettings();
+        });
+
+        // Time format toggle
+        document.querySelectorAll('.time-format-toggle input').forEach(input => {
+            input.addEventListener('change', () => {
+                document.querySelectorAll('.toggle-option').forEach(opt => opt.classList.remove('active'));
+                input.closest('.toggle-option').classList.add('active');
+            });
+        });
+
+        // History member filter
+        document.getElementById('history-member-filter')?.addEventListener('change', () => {
+            this.renderRewardHistory();
+        });
+
+        // Completed date filters
+        document.getElementById('completed-date-from')?.addEventListener('change', () => {
+            this.renderCompletedChoresTable();
+        });
+        document.getElementById('completed-date-to')?.addEventListener('change', () => {
+            this.renderCompletedChoresTable();
+        });
     }
 
     switchTab(tab) {
         this.currentTab = tab;
-        document.querySelectorAll('.tab-btn').forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.tab === tab);
+
+        // Update nav items
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.classList.toggle('active', item.dataset.tab === tab);
         });
+
+        // Update tab content
         document.querySelectorAll('.tab-content').forEach(content => {
             content.classList.toggle('active', content.id === `${tab}-tab`);
         });
+
+        // Update page header
+        this.updatePageHeader(tab);
+
+        // Close mobile sidebar
+        document.getElementById('sidebar').classList.remove('open');
+
+        // Render tab content
+        this.renderCurrentTab();
+    }
+
+    switchSubTab(mainTab, subTab) {
+        this.currentSubTab[mainTab] = subTab;
+
+        const container = document.getElementById(`${mainTab}-subtabs`);
+        container.querySelectorAll('.sub-tab').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.subtab === subTab);
+        });
+
+        // Show/hide sub-content
+        const tabContainer = document.getElementById(`${mainTab}-tab`);
+        tabContainer.querySelectorAll('.sub-content').forEach(content => {
+            content.classList.toggle('active', content.id === `${mainTab}-${subTab}`);
+        });
+
+        // Render sub-content
+        if (mainTab === 'chores') {
+            if (subTab === 'active') this.renderActiveChoresTable();
+            else if (subTab === 'completed') this.renderCompletedChoresTable();
+            else if (subTab === 'templates') this.renderTemplatesTable();
+        } else if (mainTab === 'rewards') {
+            if (subTab === 'catalog') this.renderRewardsCatalog();
+            else if (subTab === 'pending') this.renderPendingClaims();
+            else if (subTab === 'history') this.renderRewardHistory();
+        }
+    }
+
+    updatePageHeader(tab) {
+        const headers = {
+            dashboard: { title: 'Dashboard', subtitle: 'Overview of your family\'s activities', actions: '' },
+            members: {
+                title: 'Members',
+                subtitle: `${this.data?.members.length || 0} family members`,
+                actions: `<button class="btn btn-primary" onclick="app.showAddMemberModal()">
+                    <span class="mdi mdi-plus"></span> Add Member
+                </button>`
+            },
+            chores: {
+                title: 'Chores',
+                subtitle: 'Manage tasks and assignments',
+                actions: `<button class="btn btn-primary" onclick="app.showAddChoreModal()">
+                    <span class="mdi mdi-plus"></span> Add Chore
+                </button>`
+            },
+            rewards: {
+                title: 'Rewards',
+                subtitle: 'Manage rewards and claims',
+                actions: `<button class="btn btn-primary" onclick="app.showAddRewardModal()">
+                    <span class="mdi mdi-plus"></span> Add Reward
+                </button>`
+            },
+            settings: { title: 'Settings', subtitle: 'Configure your FamDo integration', actions: '' }
+        };
+
+        const config = headers[tab] || headers.dashboard;
+        document.getElementById('page-title').textContent = config.title;
+        document.getElementById('page-subtitle').textContent = config.subtitle;
+        document.getElementById('page-actions').innerHTML = config.actions;
+        document.getElementById('mobile-title').textContent = config.title;
+    }
+
+    // ==================== Dashboard ====================
+
+    renderDashboard() {
+        this.renderStatsRow();
+        this.renderPendingApprovals();
+        this.renderPendingRewardsDashboard();
+        this.renderActivityFeed();
+    }
+
+    renderStatsRow() {
+        const totalMembers = this.data.members.length;
+        const totalPoints = this.data.members.reduce((sum, m) => sum + (m.points || 0), 0);
+        const pendingApprovals = this.data.chores.filter(c => c.status === 'awaiting_approval' && !c.is_template).length;
+        const pendingRewards = (this.data.reward_claims || []).filter(c => c.status === 'pending').length;
+
+        const container = document.getElementById('stats-row');
+        container.innerHTML = `
+            <div class="stats-card" onclick="app.switchTab('members')">
+                <div class="stats-card-icon" style="background: var(--primary)">
+                    <span class="mdi mdi-account-group"></span>
+                </div>
+                <div class="stats-card-content">
+                    <div class="stats-card-value">${totalMembers}</div>
+                    <div class="stats-card-label">Total Members</div>
+                </div>
+            </div>
+            <div class="stats-card" onclick="app.switchTab('members')">
+                <div class="stats-card-icon" style="background: var(--info)">
+                    <span class="mdi mdi-star"></span>
+                </div>
+                <div class="stats-card-content">
+                    <div class="stats-card-value">${totalPoints}</div>
+                    <div class="stats-card-label">Total Points</div>
+                </div>
+            </div>
+            <div class="stats-card" onclick="app.switchTab('chores')">
+                <div class="stats-card-icon" style="background: ${pendingApprovals > 0 ? 'var(--warning)' : 'var(--success)'}">
+                    <span class="mdi mdi-clock-check-outline"></span>
+                </div>
+                <div class="stats-card-content">
+                    <div class="stats-card-value">${pendingApprovals}</div>
+                    <div class="stats-card-label">Pending Approvals</div>
+                </div>
+            </div>
+            <div class="stats-card" onclick="app.switchTab('rewards'); app.switchSubTab('rewards', 'pending')">
+                <div class="stats-card-icon" style="background: ${pendingRewards > 0 ? 'var(--secondary)' : 'var(--success)'}">
+                    <span class="mdi mdi-gift-outline"></span>
+                </div>
+                <div class="stats-card-content">
+                    <div class="stats-card-value">${pendingRewards}</div>
+                    <div class="stats-card-label">Pending Rewards</div>
+                </div>
+            </div>
+        `;
+    }
+
+    renderPendingApprovals() {
+        const container = document.getElementById('pending-approvals');
+        const pending = this.data.chores.filter(c => c.status === 'awaiting_approval' && !c.is_template);
+
+        // Show/hide approve all button
+        const approveAllBtn = document.getElementById('approve-all-btn');
+        if (approveAllBtn) {
+            approveAllBtn.style.display = pending.length > 1 ? 'block' : 'none';
+        }
+
+        if (pending.length === 0) {
+            container.innerHTML = `<div class="empty-state"><p>No pending approvals</p></div>`;
+            return;
+        }
+
+        container.innerHTML = `<div class="pending-list">
+            ${pending.map(chore => {
+                const member = this.data.members.find(m => m.id === chore.claimed_by);
+                return `
+                    <div class="pending-item">
+                        <div class="chore-icon-sm" style="background: ${member?.color || 'var(--primary)'}">
+                            <span class="mdi ${chore.icon}"></span>
+                        </div>
+                        <div class="pending-info">
+                            <div class="pending-title">${chore.name}</div>
+                            <div class="pending-meta">${member?.name || 'Unknown'} - ${chore.points} pts</div>
+                        </div>
+                        <div class="pending-actions">
+                            <button class="btn btn-sm btn-success" onclick="app.approveChore('${chore.id}')">
+                                <span class="mdi mdi-check"></span>
+                            </button>
+                            <button class="btn btn-sm btn-danger" onclick="app.rejectChore('${chore.id}')">
+                                <span class="mdi mdi-close"></span>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('')}
+        </div>`;
+    }
+
+    renderPendingRewardsDashboard() {
+        const container = document.getElementById('pending-rewards');
+        const pending = (this.data.reward_claims || []).filter(c => c.status === 'pending');
+
+        if (pending.length === 0) {
+            container.innerHTML = `<div class="empty-state"><p>No pending reward claims</p></div>`;
+            return;
+        }
+
+        container.innerHTML = `<div class="pending-list">
+            ${pending.map(claim => {
+                const member = this.data.members.find(m => m.id === claim.member_id);
+                const reward = this.data.rewards.find(r => r.id === claim.reward_id);
+                return `
+                    <div class="pending-item">
+                        <div class="reward-icon-sm">
+                            <span class="mdi ${reward?.icon || 'mdi-gift'}"></span>
+                        </div>
+                        <div class="pending-info">
+                            <div class="pending-title">${reward?.name || 'Unknown'}</div>
+                            <div class="pending-meta">${member?.name || 'Unknown'} - ${claim.points_spent} pts</div>
+                        </div>
+                        <div class="pending-actions">
+                            <button class="btn btn-sm btn-success" onclick="app.fulfillClaim('${claim.id}')">
+                                <span class="mdi mdi-check"></span> Fulfill
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('')}
+        </div>`;
+    }
+
+    renderActivityFeed() {
+        const container = document.getElementById('activity-feed');
+        const filter = document.getElementById('activity-filter')?.value || 'all';
+        const activities = this.buildActivityFeed(filter);
+
+        if (activities.length === 0) {
+            container.innerHTML = `<div class="empty-state"><p>No recent activity</p></div>`;
+            return;
+        }
+
+        container.innerHTML = `<div class="activity-list">
+            ${activities.slice(0, 20).map(activity => {
+                const member = this.data.members.find(m => m.id === activity.memberId);
+                const isPositive = activity.points >= 0;
+                return `
+                    <div class="activity-item">
+                        <div class="activity-icon ${activity.type.includes('chore') ? 'chore' : 'reward'}">
+                            <span class="mdi ${activity.type.includes('chore') ? 'mdi-broom' : 'mdi-gift'}"></span>
+                        </div>
+                        <div class="activity-content">
+                            <div class="activity-text">
+                                <strong>${member?.name || 'Unknown'}</strong> ${activity.action} ${activity.description}
+                            </div>
+                            <div class="activity-time">${this.formatRelativeTime(activity.timestamp)}</div>
+                        </div>
+                        ${activity.points !== 0 ? `
+                            <div class="activity-points ${isPositive ? 'positive' : 'negative'}">
+                                ${isPositive ? '+' : ''}${activity.points} pts
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('')}
+        </div>`;
+    }
+
+    buildActivityFeed(filter = 'all') {
+        const activities = [];
+
+        // From completed chores
+        if (filter === 'all' || filter === 'chore_completed') {
+            this.data.chores.filter(c => c.status === 'completed' && c.completed_at && !c.is_template).forEach(c => {
+                activities.push({
+                    type: 'chore_completed',
+                    timestamp: c.completed_at,
+                    memberId: c.claimed_by,
+                    description: c.name,
+                    action: 'completed',
+                    points: c.points
+                });
+            });
+        }
+
+        // From reward claims
+        if (filter === 'all' || filter === 'reward') {
+            (this.data.reward_claims || []).forEach(c => {
+                const reward = this.data.rewards.find(r => r.id === c.reward_id);
+                if (c.status === 'fulfilled') {
+                    activities.push({
+                        type: 'reward_fulfilled',
+                        timestamp: c.fulfilled_at || c.claimed_at,
+                        memberId: c.member_id,
+                        description: reward?.name || 'Unknown',
+                        action: 'received',
+                        points: -(c.points_spent || 0)
+                    });
+                } else {
+                    activities.push({
+                        type: 'reward_claimed',
+                        timestamp: c.claimed_at,
+                        memberId: c.member_id,
+                        description: reward?.name || 'Unknown',
+                        action: 'claimed',
+                        points: 0
+                    });
+                }
+            });
+        }
+
+        return activities.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    }
+
+    // ==================== Members Tab ====================
+
+    renderMembersTable() {
+        const tbody = document.getElementById('members-tbody');
+
+        if (this.data.members.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No members yet. Add your first family member!</td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = this.data.members.map(member => {
+            const completedCount = this.data.chores.filter(c => c.claimed_by === member.id && c.status === 'completed').length;
+            return `
+                <tr data-member-id="${member.id}" style="cursor: pointer;">
+                    <td>
+                        <div class="member-cell">
+                            <div class="member-avatar-sm" style="background: ${member.color}">
+                                <span class="mdi ${member.avatar}"></span>
+                            </div>
+                            <span>${member.name}</span>
+                        </div>
+                    </td>
+                    <td><span class="status-badge ${member.role}">${member.role}</span></td>
+                    <td class="text-right"><strong>${member.points}</strong></td>
+                    <td class="text-right">${completedCount}</td>
+                    <td class="text-right">
+                        <div class="row-actions">
+                            <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); app.showEditMemberModal('${member.id}')">
+                                <span class="mdi mdi-pencil"></span>
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    showMemberDrawer(memberId) {
+        const member = this.data.members.find(m => m.id === memberId);
+        if (!member) return;
+
+        const transactions = this.getMemberTransactions(memberId);
+
+        document.getElementById('drawer-title').textContent = 'Member Details';
+        document.getElementById('drawer-body').innerHTML = `
+            <div class="drawer-member-header">
+                <div class="drawer-avatar" style="background: ${member.color}">
+                    <span class="mdi ${member.avatar}"></span>
+                </div>
+                <div class="drawer-member-info">
+                    <h3>${member.name}</h3>
+                    <p>${member.role} - ${member.points} points</p>
+                </div>
+            </div>
+
+            <div class="point-adjustment">
+                <h4>Adjust Points</h4>
+                <div class="point-controls">
+                    <button class="point-btn minus" onclick="app.decrementPointAdjustment()">-</button>
+                    <input type="number" class="form-input point-input" id="point-adjustment-value" value="10" min="1">
+                    <button class="point-btn plus" onclick="app.incrementPointAdjustment()">+</button>
+                    <button class="btn btn-primary point-submit" onclick="app.applyPointAdjustment('${member.id}')">
+                        Apply
+                    </button>
+                </div>
+            </div>
+
+            <div class="transaction-history">
+                <h4>Recent Transactions</h4>
+                ${transactions.length === 0 ? '<p class="empty-state">No transactions yet</p>' : `
+                    <div class="transaction-list">
+                        ${transactions.slice(0, 15).map(t => {
+                            const isPositive = t.points > 0;
+                            return `
+                                <div class="transaction-item">
+                                    <div class="transaction-icon ${isPositive ? 'positive' : 'negative'}">
+                                        <span class="mdi ${isPositive ? 'mdi-plus' : 'mdi-minus'}"></span>
+                                    </div>
+                                    <div class="transaction-details">
+                                        <div class="transaction-desc">${t.description}</div>
+                                        <div class="transaction-date">${this.formatRelativeTime(t.timestamp)}</div>
+                                    </div>
+                                    <div class="transaction-amount ${isPositive ? 'positive' : 'negative'}">
+                                        ${isPositive ? '+' : ''}${t.points}
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                `}
+            </div>
+        `;
+
+        document.getElementById('drawer-footer').innerHTML = `
+            <div class="form-actions">
+                <button class="btn btn-secondary" onclick="app.showEditMemberModal('${member.id}'); app.closeDrawer();">
+                    <span class="mdi mdi-pencil"></span> Edit Member
+                </button>
+                <button class="btn btn-danger" onclick="app.deleteMember('${member.id}')">
+                    <span class="mdi mdi-delete"></span> Delete
+                </button>
+            </div>
+        `;
+
+        this.openDrawer();
+    }
+
+    getMemberTransactions(memberId) {
+        const transactions = [];
+
+        // From completed chores
+        this.data.chores.filter(c => c.claimed_by === memberId && c.status === 'completed').forEach(c => {
+            transactions.push({
+                type: 'chore',
+                timestamp: c.completed_at,
+                description: `Completed: ${c.name}`,
+                points: c.points
+            });
+        });
+
+        // From reward claims
+        (this.data.reward_claims || []).filter(c => c.member_id === memberId).forEach(c => {
+            const reward = this.data.rewards.find(r => r.id === c.reward_id);
+            transactions.push({
+                type: 'reward',
+                timestamp: c.claimed_at,
+                description: `Claimed: ${reward?.name || 'Unknown'}`,
+                points: -(c.points_spent || 0)
+            });
+        });
+
+        return transactions.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    }
+
+    incrementPointAdjustment() {
+        const input = document.getElementById('point-adjustment-value');
+        input.value = parseInt(input.value || 0) + 5;
+    }
+
+    decrementPointAdjustment() {
+        const input = document.getElementById('point-adjustment-value');
+        const newVal = parseInt(input.value || 0) - 5;
+        input.value = Math.max(1, newVal);
+    }
+
+    async applyPointAdjustment(memberId) {
+        const input = document.getElementById('point-adjustment-value');
+        const amount = parseInt(input.value) || 0;
+        if (amount === 0) return;
+
+        const member = this.data.members.find(m => m.id === memberId);
+        if (!member) return;
+
+        const newPoints = member.points + amount;
+
+        try {
+            await this.sendCommand('famdo/update_member', {
+                member_id: memberId,
+                points: newPoints
+            });
+            this.showToast(`${amount > 0 ? 'Added' : 'Deducted'} ${Math.abs(amount)} points`, 'success');
+            this.closeDrawer();
+        } catch (error) {
+            this.showToast(`Failed: ${error.message}`, 'error');
+        }
+    }
+
+    // ==================== Chores Tab ====================
+
+    renderChoresTab() {
+        const subTab = this.currentSubTab.chores || 'active';
+        this.switchSubTab('chores', subTab);
+    }
+
+    renderActiveChoresTable() {
+        const tbody = document.getElementById('chores-tbody');
+        const filter = document.getElementById('chore-status-filter')?.value || 'all';
+
+        let chores = this.data.chores.filter(c => !c.is_template && c.status !== 'completed');
+
+        if (filter !== 'all') {
+            chores = chores.filter(c => c.status === filter);
+        }
+
+        // Clear selection
+        this.selectedChores.clear();
+        document.getElementById('chore-select-all').checked = false;
+        this.updateBulkApproveButton();
+
+        if (chores.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No active chores</td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = chores.map(chore => {
+            const assignedMember = this.data.members.find(m => m.id === chore.assigned_to);
+            const claimedMember = this.data.members.find(m => m.id === chore.claimed_by);
+            const canSelect = chore.status === 'awaiting_approval';
+
+            return `
+                <tr data-chore-id="${chore.id}">
+                    <td class="checkbox-col">
+                        <input type="checkbox" ${canSelect ? '' : 'disabled'}
+                               onchange="app.toggleChoreSelection('${chore.id}', this.checked)">
+                    </td>
+                    <td>
+                        <div class="chore-cell">
+                            <div class="chore-icon-sm" style="background: ${assignedMember?.color || 'var(--primary)'}">
+                                <span class="mdi ${chore.icon}"></span>
+                            </div>
+                            <span>
+                                ${chore.name}
+                                ${chore.template_id || chore.recurrence !== 'none' ? '<span class="mdi mdi-refresh recurring-badge"></span>' : ''}
+                            </span>
+                        </div>
+                    </td>
+                    <td><span class="status-badge ${chore.status}">${this.formatStatus(chore.status)}</span></td>
+                    <td>${claimedMember?.name || assignedMember?.name || '-'}</td>
+                    <td class="text-right">${chore.points}</td>
+                    <td>${chore.due_date ? this.formatDate(chore.due_date) : '-'}</td>
+                    <td class="text-right">
+                        <div class="row-actions">
+                            ${chore.status === 'awaiting_approval' ? `
+                                <button class="btn btn-sm btn-success" data-action="approve" title="Approve">
+                                    <span class="mdi mdi-check"></span>
+                                </button>
+                                <button class="btn btn-sm btn-danger" data-action="reject" title="Reject">
+                                    <span class="mdi mdi-close"></span>
+                                </button>
+                            ` : ''}
+                            <button class="btn btn-sm btn-secondary" data-action="edit" title="Edit">
+                                <span class="mdi mdi-pencil"></span>
+                            </button>
+                            <button class="btn btn-sm btn-danger" data-action="delete" title="Delete">
+                                <span class="mdi mdi-delete"></span>
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    renderCompletedChoresTable() {
+        const tbody = document.getElementById('completed-tbody');
+        const dateFrom = document.getElementById('completed-date-from')?.value;
+        const dateTo = document.getElementById('completed-date-to')?.value;
+
+        let completed = this.data.chores.filter(c => c.status === 'completed' && !c.is_template);
+
+        if (dateFrom) {
+            completed = completed.filter(c => c.completed_at >= dateFrom);
+        }
+        if (dateTo) {
+            completed = completed.filter(c => c.completed_at <= dateTo + 'T23:59:59');
+        }
+
+        completed.sort((a, b) => new Date(b.completed_at) - new Date(a.completed_at));
+
+        if (completed.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No completed chores</td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = completed.slice(0, 50).map(chore => {
+            const completedBy = this.data.members.find(m => m.id === chore.claimed_by);
+            const approvedBy = this.data.members.find(m => m.id === chore.approved_by);
+
+            return `
+                <tr>
+                    <td>
+                        <div class="chore-cell">
+                            <div class="chore-icon-sm" style="background: ${completedBy?.color || 'var(--primary)'}">
+                                <span class="mdi ${chore.icon}"></span>
+                            </div>
+                            <span>${chore.name}</span>
+                        </div>
+                    </td>
+                    <td>${completedBy?.name || '-'}</td>
+                    <td>${chore.completed_at ? this.formatDateTime(chore.completed_at) : '-'}</td>
+                    <td class="text-right">${chore.points}</td>
+                    <td>${approvedBy?.name || '-'}</td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    renderTemplatesTable() {
+        const tbody = document.getElementById('templates-tbody');
+        const templates = this.data.chores.filter(c => c.is_template);
+
+        if (templates.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No recurring chore templates</td></tr>`;
+            return;
+        }
+
+        const recurrenceLabels = {
+            'none': 'One time',
+            'always_on': 'Always On',
+            'daily': 'Daily',
+            'weekly': 'Weekly',
+            'monthly': 'Monthly'
+        };
+
+        tbody.innerHTML = templates.map(chore => {
+            return `
+                <tr data-chore-id="${chore.id}">
+                    <td>
+                        <div class="chore-cell">
+                            <div class="chore-icon-sm" style="background: var(--primary)">
+                                <span class="mdi ${chore.icon}"></span>
+                            </div>
+                            <span>${chore.name}</span>
+                        </div>
+                    </td>
+                    <td>${recurrenceLabels[chore.recurrence] || chore.recurrence}</td>
+                    <td class="text-right">${chore.points}</td>
+                    <td class="text-right">${chore.negative_points || 0}</td>
+                    <td class="text-right">${chore.max_instances || 3}</td>
+                    <td class="text-right">
+                        <div class="row-actions">
+                            <button class="btn btn-sm btn-secondary" data-action="edit">
+                                <span class="mdi mdi-pencil"></span>
+                            </button>
+                            <button class="btn btn-sm btn-danger" data-action="delete">
+                                <span class="mdi mdi-delete"></span>
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    handleChoreTableAction(e) {
+        const btn = e.target.closest('[data-action]');
+        if (!btn) return;
+
+        const choreId = btn.closest('tr').dataset.choreId;
+        const action = btn.dataset.action;
+
+        switch (action) {
+            case 'approve':
+                this.approveChore(choreId);
+                break;
+            case 'reject':
+                this.rejectChore(choreId);
+                break;
+            case 'edit':
+                this.showEditChoreModal(choreId);
+                break;
+            case 'delete':
+                this.deleteChore(choreId);
+                break;
+        }
+    }
+
+    toggleChoreSelection(choreId, checked) {
+        if (checked) {
+            this.selectedChores.add(choreId);
+        } else {
+            this.selectedChores.delete(choreId);
+        }
+        this.updateBulkApproveButton();
+    }
+
+    toggleAllChoreSelection(checked) {
+        const checkboxes = document.querySelectorAll('#chores-tbody input[type="checkbox"]:not(:disabled)');
+        checkboxes.forEach(cb => {
+            cb.checked = checked;
+            const choreId = cb.closest('tr').dataset.choreId;
+            if (checked) {
+                this.selectedChores.add(choreId);
+            } else {
+                this.selectedChores.delete(choreId);
+            }
+        });
+        this.updateBulkApproveButton();
+    }
+
+    updateBulkApproveButton() {
+        const btn = document.getElementById('bulk-approve-btn');
+        if (btn) {
+            btn.style.display = this.selectedChores.size > 0 ? 'flex' : 'none';
+        }
+    }
+
+    async bulkApproveChores() {
+        const choreIds = Array.from(this.selectedChores);
+        if (choreIds.length === 0) return;
+
+        try {
+            for (const choreId of choreIds) {
+                await this.sendCommand('famdo/approve_chore', {
+                    chore_id: choreId,
+                    approver_id: null
+                });
+            }
+            this.showToast(`Approved ${choreIds.length} chores`, 'success');
+            this.selectedChores.clear();
+        } catch (error) {
+            this.showToast(`Failed: ${error.message}`, 'error');
+        }
+    }
+
+    async approveAllPending() {
+        const pending = this.data.chores.filter(c => c.status === 'awaiting_approval' && !c.is_template);
+        if (pending.length === 0) return;
+
+        try {
+            for (const chore of pending) {
+                await this.sendCommand('famdo/approve_chore', {
+                    chore_id: chore.id,
+                    approver_id: null
+                });
+            }
+            this.showToast(`Approved ${pending.length} chores`, 'success');
+        } catch (error) {
+            this.showToast(`Failed: ${error.message}`, 'error');
+        }
+    }
+
+    // ==================== Rewards Tab ====================
+
+    renderRewardsTab() {
+        const subTab = this.currentSubTab.rewards || 'catalog';
+        this.switchSubTab('rewards', subTab);
+        this.populateHistoryMemberFilter();
+    }
+
+    renderRewardsCatalog() {
+        const tbody = document.getElementById('rewards-tbody');
+
+        if (this.data.rewards.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No rewards yet. Add your first reward!</td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = this.data.rewards.map(reward => {
+            const isAvailable = reward.quantity === -1 || reward.quantity > 0;
+            return `
+                <tr data-reward-id="${reward.id}">
+                    <td>
+                        <div class="reward-cell">
+                            <div class="reward-icon-sm">
+                                <span class="mdi ${reward.icon}"></span>
+                            </div>
+                            <span>${reward.name}</span>
+                        </div>
+                    </td>
+                    <td class="text-right">${reward.points_cost}</td>
+                    <td class="text-right">${reward.quantity === -1 ? 'Unlimited' : reward.quantity}</td>
+                    <td><span class="status-badge ${isAvailable ? 'available' : 'rejected'}">${isAvailable ? 'Available' : 'Out of Stock'}</span></td>
+                    <td class="text-right">
+                        <div class="row-actions">
+                            <button class="btn btn-sm btn-secondary" data-action="edit">
+                                <span class="mdi mdi-pencil"></span>
+                            </button>
+                            <button class="btn btn-sm btn-danger" data-action="delete">
+                                <span class="mdi mdi-delete"></span>
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    renderPendingClaims() {
+        const tbody = document.getElementById('claims-tbody');
+        const pending = (this.data.reward_claims || []).filter(c => c.status === 'pending');
+
+        // Clear selection
+        this.selectedClaims.clear();
+        document.getElementById('claim-select-all').checked = false;
+        this.updateBulkFulfillButton();
+
+        if (pending.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No pending claims</td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = pending.map(claim => {
+            const member = this.data.members.find(m => m.id === claim.member_id);
+            const reward = this.data.rewards.find(r => r.id === claim.reward_id);
+            return `
+                <tr data-claim-id="${claim.id}">
+                    <td class="checkbox-col">
+                        <input type="checkbox" onchange="app.toggleClaimSelection('${claim.id}', this.checked)">
+                    </td>
+                    <td>
+                        <div class="member-cell">
+                            <div class="member-avatar-sm" style="background: ${member?.color || 'var(--primary)'}">
+                                <span class="mdi ${member?.avatar || 'mdi-account'}"></span>
+                            </div>
+                            <span>${member?.name || 'Unknown'}</span>
+                        </div>
+                    </td>
+                    <td>${reward?.name || 'Unknown'}</td>
+                    <td class="text-right">${claim.points_spent}</td>
+                    <td>${this.formatDateTime(claim.claimed_at)}</td>
+                    <td class="text-right">
+                        <div class="row-actions">
+                            <button class="btn btn-sm btn-success" data-action="fulfill">
+                                <span class="mdi mdi-check"></span> Fulfill
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    renderRewardHistory() {
+        const tbody = document.getElementById('history-tbody');
+        const filter = document.getElementById('history-member-filter')?.value || 'all';
+
+        let claims = [...(this.data.reward_claims || [])];
+
+        if (filter !== 'all') {
+            claims = claims.filter(c => c.member_id === filter);
+        }
+
+        claims.sort((a, b) => new Date(b.claimed_at) - new Date(a.claimed_at));
+
+        if (claims.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="5" class="empty-state">No reward history</td></tr>`;
+            return;
+        }
+
+        tbody.innerHTML = claims.slice(0, 50).map(claim => {
+            const member = this.data.members.find(m => m.id === claim.member_id);
+            const reward = this.data.rewards.find(r => r.id === claim.reward_id);
+            return `
+                <tr>
+                    <td>
+                        <div class="member-cell">
+                            <div class="member-avatar-sm" style="background: ${member?.color || 'var(--primary)'}">
+                                <span class="mdi ${member?.avatar || 'mdi-account'}"></span>
+                            </div>
+                            <span>${member?.name || 'Unknown'}</span>
+                        </div>
+                    </td>
+                    <td>${reward?.name || 'Unknown'}</td>
+                    <td class="text-right">${claim.points_spent}</td>
+                    <td><span class="status-badge ${claim.status}">${claim.status}</span></td>
+                    <td>${this.formatDateTime(claim.claimed_at)}</td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    populateHistoryMemberFilter() {
+        const select = document.getElementById('history-member-filter');
+        if (!select) return;
+
+        const currentValue = select.value;
+        select.innerHTML = `<option value="all">All Members</option>` +
+            this.data.members.map(m => `<option value="${m.id}">${m.name}</option>`).join('');
+        select.value = currentValue || 'all';
+    }
+
+    handleClaimTableAction(e) {
+        const btn = e.target.closest('[data-action]');
+        if (!btn) return;
+
+        const claimId = btn.closest('tr').dataset.claimId;
+        const action = btn.dataset.action;
+
+        if (action === 'fulfill') {
+            this.fulfillClaim(claimId);
+        }
+    }
+
+    toggleClaimSelection(claimId, checked) {
+        if (checked) {
+            this.selectedClaims.add(claimId);
+        } else {
+            this.selectedClaims.delete(claimId);
+        }
+        this.updateBulkFulfillButton();
+    }
+
+    toggleAllClaimSelection(checked) {
+        const checkboxes = document.querySelectorAll('#claims-tbody input[type="checkbox"]');
+        checkboxes.forEach(cb => {
+            cb.checked = checked;
+            const claimId = cb.closest('tr').dataset.claimId;
+            if (checked) {
+                this.selectedClaims.add(claimId);
+            } else {
+                this.selectedClaims.delete(claimId);
+            }
+        });
+        this.updateBulkFulfillButton();
+    }
+
+    updateBulkFulfillButton() {
+        const btn = document.getElementById('bulk-fulfill-btn');
+        if (btn) {
+            btn.style.display = this.selectedClaims.size > 0 ? 'flex' : 'none';
+        }
+    }
+
+    async bulkFulfillClaims() {
+        const claimIds = Array.from(this.selectedClaims);
+        if (claimIds.length === 0) return;
+
+        try {
+            for (const claimId of claimIds) {
+                await this.sendCommand('famdo/fulfill_reward_claim', { claim_id: claimId });
+            }
+            this.showToast(`Fulfilled ${claimIds.length} reward claims`, 'success');
+            this.selectedClaims.clear();
+        } catch (error) {
+            this.showToast(`Failed: ${error.message}`, 'error');
+        }
+    }
+
+    // ==================== Settings Tab ====================
+
+    populateSettingsForm() {
+        document.getElementById('setting-family-name').value = this.data.family_name || '';
+
+        const timeFormat = this.data.settings?.time_format || '12h';
+        document.querySelectorAll('.time-format-toggle input').forEach(input => {
+            input.checked = input.value === timeFormat;
+            input.closest('.toggle-option').classList.toggle('active', input.value === timeFormat);
+        });
+
+        this.renderCalendarSources();
+    }
+
+    renderCalendarSources() {
+        const container = document.getElementById('calendar-sources');
+        if (!container) return;
+
+        const selectedCalendars = this.data.settings?.selected_calendars || [];
+        const calendarColors = this.data.settings?.calendar_colors || {};
+        const defaultColors = ['#9B59B6', '#3498DB', '#E74C3C', '#2ECC71', '#F39C12', '#1ABC9C', '#E91E63', '#00BCD4'];
+
+        if (this.haCalendars.length === 0) {
+            container.innerHTML = `<p class="empty-state">No calendar integrations found in Home Assistant.</p>`;
+            return;
+        }
+
+        container.innerHTML = this.haCalendars.map((cal, index) => {
+            const currentColor = calendarColors[cal.entity_id] || defaultColors[index % defaultColors.length];
+            return `
+                <div class="calendar-source-row">
+                    <label class="calendar-source-option">
+                        <input type="checkbox" name="selected_calendars" value="${cal.entity_id}"
+                            ${selectedCalendars.includes(cal.entity_id) ? 'checked' : ''}>
+                        <span class="mdi mdi-calendar"></span>
+                        <span class="calendar-source-name">${cal.name}</span>
+                    </label>
+                    <input type="color" class="calendar-color-picker"
+                        data-entity-id="${cal.entity_id}"
+                        value="${currentColor}"
+                        title="Choose color for ${cal.name}">
+                </div>
+            `;
+        }).join('');
+    }
+
+    async saveSettings() {
+        const formData = new FormData(document.getElementById('settings-form'));
+
+        const selectedCalendars = [];
+        document.querySelectorAll('input[name="selected_calendars"]:checked').forEach(cb => {
+            selectedCalendars.push(cb.value);
+        });
+
+        const calendarColors = {};
+        document.querySelectorAll('.calendar-color-picker').forEach(picker => {
+            calendarColors[picker.dataset.entityId] = picker.value;
+        });
+
+        try {
+            await this.sendCommand('famdo/update_settings', {
+                family_name: formData.get('family_name'),
+                time_format: formData.get('time_format'),
+                selected_calendars: selectedCalendars,
+                calendar_colors: calendarColors
+            });
+            this.showToast('Settings saved!', 'success');
+        } catch (error) {
+            this.showToast(`Failed: ${error.message}`, 'error');
+        }
     }
 
     // ==================== Actions ====================
 
-    async handleChoreAction(choreId, action) {
-        if (!this.selectedMember) {
-            this.showToast('Please select a family member first', 'error');
-            return;
-        }
-
+    async approveChore(choreId) {
         try {
-            switch (action) {
-                case 'claim':
-                    await this.sendCommand('famdo/claim_chore', {
-                        chore_id: choreId,
-                        member_id: this.selectedMember.id
-                    });
-                    this.showToast('Chore claimed!', 'success');
-                    break;
-
-                case 'complete':
-                    // Find the chore to check if we need to claim first
-                    const choreToComplete = this.data.chores.find(c => c.id === choreId);
-
-                    // If chore is pending/overdue and assigned to me but not claimed, claim it first
-                    if (choreToComplete &&
-                        (choreToComplete.status === 'pending' || choreToComplete.status === 'overdue') &&
-                        !choreToComplete.claimed_by) {
-                        await this.sendCommand('famdo/claim_chore', {
-                            chore_id: choreId,
-                            member_id: this.selectedMember.id
-                        });
-                    }
-
-                    await this.sendCommand('famdo/complete_chore', {
-                        chore_id: choreId,
-                        member_id: this.selectedMember.id
-                    });
-                    this.showToast('Chore submitted for approval!', 'success');
-                    break;
-
-                case 'approve':
-                    const chore = this.data.chores.find(c => c.id === choreId);
-                    await this.sendCommand('famdo/approve_chore', {
-                        chore_id: choreId,
-                        approver_id: this.selectedMember.id
-                    });
-                    this.showPointsAnimation(chore?.points || 0);
-                    this.showToast(`Chore approved! ${chore?.points || 0} points awarded!`, 'success');
-                    break;
-
-                case 'reject':
-                    await this.sendCommand('famdo/reject_chore', {
-                        chore_id: choreId,
-                        approver_id: this.selectedMember.id
-                    });
-                    this.showToast('Chore rejected', 'info');
-                    break;
-
-                case 'retry':
-                    await this.sendCommand('famdo/retry_chore', {
-                        chore_id: choreId,
-                        member_id: this.selectedMember.id
-                    });
-                    this.showToast('Chore ready to retry!', 'success');
-                    break;
-            }
-        } catch (error) {
-            this.showToast(`Failed: ${error.message}`, 'error');
-        }
-    }
-
-    async claimReward(rewardId) {
-        if (!this.selectedMember) {
-            this.showToast('Please select a family member first', 'error');
-            return;
-        }
-
-        const reward = this.data.rewards.find(r => r.id === rewardId);
-        if (!reward) return;
-
-        if (this.selectedMember.points < reward.points_cost) {
-            this.showToast('Not enough points!', 'error');
-            return;
-        }
-
-        try {
-            await this.sendCommand('famdo/claim_reward', {
-                reward_id: rewardId,
-                member_id: this.selectedMember.id
+            const chore = this.data.chores.find(c => c.id === choreId);
+            await this.sendCommand('famdo/approve_chore', {
+                chore_id: choreId,
+                approver_id: null
             });
-            this.showToast(`Reward claimed: ${reward.name}!`, 'success');
+            this.showPointsAnimation(chore?.points || 0);
+            this.showToast(`Approved! ${chore?.points || 0} points awarded`, 'success');
         } catch (error) {
             this.showToast(`Failed: ${error.message}`, 'error');
         }
     }
 
-    async toggleTodo(todoId) {
-        const todo = this.data.todos.find(t => t.id === todoId);
-        if (!todo) return;
+    async rejectChore(choreId) {
+        try {
+            await this.sendCommand('famdo/reject_chore', {
+                chore_id: choreId,
+                approver_id: null
+            });
+            this.showToast('Chore rejected', 'info');
+        } catch (error) {
+            this.showToast(`Failed: ${error.message}`, 'error');
+        }
+    }
+
+    async deleteChore(choreId) {
+        if (!confirm('Are you sure you want to delete this chore?')) return;
 
         try {
-            if (todo.completed) {
-                await this.sendCommand('famdo/update_todo', {
-                    todo_id: todoId,
-                    completed: false
-                });
-            } else {
-                await this.sendCommand('famdo/complete_todo', {
-                    todo_id: todoId
-                });
-            }
+            await this.sendCommand('famdo/delete_chore', { chore_id: choreId });
+            this.showToast('Chore deleted', 'success');
+        } catch (error) {
+            this.showToast(`Failed: ${error.message}`, 'error');
+        }
+    }
+
+    async fulfillClaim(claimId) {
+        try {
+            await this.sendCommand('famdo/fulfill_reward_claim', { claim_id: claimId });
+            this.showToast('Reward fulfilled!', 'success');
+        } catch (error) {
+            this.showToast(`Failed: ${error.message}`, 'error');
+        }
+    }
+
+    async deleteReward(rewardId) {
+        if (!confirm('Are you sure you want to delete this reward?')) return;
+
+        try {
+            await this.sendCommand('famdo/delete_reward', { reward_id: rewardId });
+            this.showToast('Reward deleted', 'success');
+        } catch (error) {
+            this.showToast(`Failed: ${error.message}`, 'error');
+        }
+    }
+
+    async deleteMember(memberId) {
+        const member = this.data.members.find(m => m.id === memberId);
+        if (!confirm(`Are you sure you want to delete ${member?.name || 'this member'}?`)) return;
+
+        try {
+            await this.sendCommand('famdo/remove_member', { member_id: memberId });
+            this.closeDrawer();
+            this.showToast('Member deleted', 'success');
         } catch (error) {
             this.showToast(`Failed: ${error.message}`, 'error');
         }
@@ -995,6 +1483,16 @@ class FamDoApp {
 
     closeModal() {
         document.getElementById('modal-overlay').classList.remove('active');
+    }
+
+    openDrawer() {
+        document.getElementById('side-drawer').classList.add('active');
+        document.getElementById('drawer-overlay').classList.add('active');
+    }
+
+    closeDrawer() {
+        document.getElementById('side-drawer').classList.remove('active');
+        document.getElementById('drawer-overlay').classList.remove('active');
     }
 
     showAddMemberModal() {
@@ -1035,8 +1533,8 @@ class FamDoApp {
                     </div>
                 </div>
                 <div class="form-actions">
-                    <button type="button" class="form-btn secondary" onclick="app.closeModal()">Cancel</button>
-                    <button type="submit" class="form-btn">Add Member</button>
+                    <button type="button" class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add Member</button>
                 </div>
             </form>
         `;
@@ -1087,10 +1585,6 @@ class FamDoApp {
                     </select>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">Points</label>
-                    <input type="number" class="form-input" name="points" value="${member.points}" min="0">
-                </div>
-                <div class="form-group">
                     <label class="form-label">Color</label>
                     <div class="color-picker">
                         ${colors.map(c => `
@@ -1111,14 +1605,13 @@ class FamDoApp {
                     </div>
                 </div>
                 <div class="form-actions">
-                    <button type="button" class="form-btn danger" onclick="app.deleteMember('${memberId}')">Delete</button>
-                    <button type="button" class="form-btn secondary" onclick="app.closeModal()">Cancel</button>
-                    <button type="submit" class="form-btn">Save</button>
+                    <button type="button" class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save</button>
                 </div>
             </form>
         `;
 
-        this.showModal('Edit Family Member', content);
+        this.showModal('Edit Member', content);
         this.setupColorPicker();
         this.setupIconPicker();
 
@@ -1133,7 +1626,6 @@ class FamDoApp {
                     member_id: memberId,
                     name: formData.get('name'),
                     role: formData.get('role'),
-                    points: parseInt(formData.get('points')) || 0,
                     color: color,
                     avatar: avatar
                 });
@@ -1143,25 +1635,6 @@ class FamDoApp {
                 this.showToast(`Failed: ${error.message}`, 'error');
             }
         });
-    }
-
-    async deleteMember(memberId) {
-        const member = this.data.members.find(m => m.id === memberId);
-        if (!confirm(`Are you sure you want to delete ${member?.name || 'this member'}? This cannot be undone.`)) {
-            return;
-        }
-
-        try {
-            await this.sendCommand('famdo/remove_member', { member_id: memberId });
-            this.closeModal();
-            // If deleted member was selected, select another
-            if (this.selectedMember?.id === memberId) {
-                this.selectedMember = this.data.members.find(m => m.id !== memberId) || null;
-            }
-            this.showToast('Member deleted', 'success');
-        } catch (error) {
-            this.showToast(`Failed: ${error.message}`, 'error');
-        }
     }
 
     showAddChoreModal() {
@@ -1174,7 +1647,7 @@ class FamDoApp {
                     <input type="text" class="form-input" name="name" required placeholder="e.g., Make bed">
                 </div>
                 <div class="form-group">
-                    <label class="form-label">Description (optional)</label>
+                    <label class="form-label">Description</label>
                     <textarea class="form-textarea" name="description" placeholder="Additional details..."></textarea>
                 </div>
                 <div class="form-row">
@@ -1186,7 +1659,7 @@ class FamDoApp {
                         <label class="form-label">Recurrence</label>
                         <select class="form-select" name="recurrence" id="chore-recurrence">
                             <option value="none">One time</option>
-                            <option value="always_on">Always On (repeats after approval)</option>
+                            <option value="always_on">Always On</option>
                             <option value="daily">Daily</option>
                             <option value="weekly">Weekly</option>
                             <option value="monthly">Monthly</option>
@@ -1196,23 +1669,17 @@ class FamDoApp {
                 <div class="form-group recurring-options" id="recurring-options" style="display: none;">
                     <div class="form-row">
                         <div class="form-group" id="negative-points-group" style="display: none;">
-                            <label class="form-label">
-                                Overdue Penalty
-                                <span class="mdi mdi-help-circle" title="Points deducted if chore is not completed by due date"></span>
-                            </label>
-                            <input type="number" class="form-input" name="negative_points" value="0" min="0" placeholder="0">
+                            <label class="form-label">Overdue Penalty</label>
+                            <input type="number" class="form-input" name="negative_points" value="0" min="0">
                         </div>
                         <div class="form-group">
-                            <label class="form-label">
-                                Max Queue
-                                <span class="mdi mdi-help-circle" title="Maximum instances that can exist at once (prevents pile-up)"></span>
-                            </label>
+                            <label class="form-label">Max Queue</label>
                             <input type="number" class="form-input" name="max_instances" value="3" min="1" max="10">
                         </div>
                     </div>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">Assign To (optional)</label>
+                    <label class="form-label">Assign To</label>
                     <select class="form-select" name="assigned_to">
                         <option value="">Anyone</option>
                         ${this.data.members.map(m => `<option value="${m.id}">${m.name}</option>`).join('')}
@@ -1220,7 +1687,7 @@ class FamDoApp {
                 </div>
                 <div class="form-row" id="due-date-row">
                     <div class="form-group">
-                        <label class="form-label">Due Date (optional)</label>
+                        <label class="form-label">Due Date</label>
                         <input type="date" class="form-input" name="due_date">
                     </div>
                     <div class="form-group">
@@ -1239,8 +1706,8 @@ class FamDoApp {
                     </div>
                 </div>
                 <div class="form-actions">
-                    <button type="button" class="form-btn secondary" onclick="app.closeModal()">Cancel</button>
-                    <button type="submit" class="form-btn">Add Chore</button>
+                    <button type="button" class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add Chore</button>
                 </div>
             </form>
         `;
@@ -1248,7 +1715,6 @@ class FamDoApp {
         this.showModal('Add Chore', content);
         this.setupIconPicker();
 
-        // Handle recurrence selection changes
         const recurrenceSelect = document.getElementById('chore-recurrence');
         const recurringOptions = document.getElementById('recurring-options');
         const negativePointsGroup = document.getElementById('negative-points-group');
@@ -1260,13 +1726,8 @@ class FamDoApp {
             const isTimeBased = ['daily', 'weekly', 'monthly'].includes(value);
             const isAlwaysOn = value === 'always_on';
 
-            // Show recurring options for all recurring types
             recurringOptions.style.display = isRecurring ? 'block' : 'none';
-
-            // Show negative points only for time-based chores
             negativePointsGroup.style.display = isTimeBased ? 'block' : 'none';
-
-            // Hide due date for always_on chores (they don't have deadlines)
             dueDateRow.style.display = isAlwaysOn ? 'none' : 'flex';
         };
 
@@ -1300,314 +1761,12 @@ class FamDoApp {
         });
     }
 
-    showAddRewardModal() {
-        const icons = ['mdi-gift', 'mdi-gamepad-variant', 'mdi-ice-cream', 'mdi-movie', 'mdi-cash', 'mdi-star', 'mdi-trophy', 'mdi-crown'];
-
-        const content = `
-            <form id="add-reward-form">
-                <div class="form-group">
-                    <label class="form-label">Reward Name</label>
-                    <input type="text" class="form-input" name="name" required placeholder="e.g., Extra screen time">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Description (optional)</label>
-                    <textarea class="form-textarea" name="description" placeholder="What does this reward include?"></textarea>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">Points Cost</label>
-                        <input type="number" class="form-input" name="points_cost" value="50" min="1">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Quantity</label>
-                        <input type="number" class="form-input" name="quantity" value="-1" min="-1" placeholder="-1 for unlimited">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Icon</label>
-                    <div class="icon-picker">
-                        ${icons.map((icon, i) => `
-                            <div class="icon-option ${i === 0 ? 'selected' : ''}" data-icon="${icon}">
-                                <span class="mdi ${icon}"></span>
-                            </div>
-                        `).join('')}
-                    </div>
-                </div>
-                <div class="form-actions">
-                    <button type="button" class="form-btn secondary" onclick="app.closeModal()">Cancel</button>
-                    <button type="submit" class="form-btn">Add Reward</button>
-                </div>
-            </form>
-        `;
-
-        this.showModal('Add Reward', content);
-        this.setupIconPicker();
-
-        document.getElementById('add-reward-form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
-            const icon = document.querySelector('.icon-picker .icon-option.selected')?.dataset.icon || 'mdi-gift';
-
-            try {
-                await this.sendCommand('famdo/add_reward', {
-                    name: formData.get('name'),
-                    description: formData.get('description') || '',
-                    points_cost: parseInt(formData.get('points_cost')) || 50,
-                    quantity: parseInt(formData.get('quantity')) || -1,
-                    icon: icon
-                });
-                this.closeModal();
-                this.showToast('Reward added!', 'success');
-            } catch (error) {
-                this.showToast(`Failed: ${error.message}`, 'error');
-            }
-        });
-    }
-
-    showAddTodoModal() {
-        const content = `
-            <form id="add-todo-form">
-                <div class="form-group">
-                    <label class="form-label">Title</label>
-                    <input type="text" class="form-input" name="title" required placeholder="What needs to be done?">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Description (optional)</label>
-                    <textarea class="form-textarea" name="description" placeholder="Additional details..."></textarea>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">Priority</label>
-                        <select class="form-select" name="priority">
-                            <option value="low">Low</option>
-                            <option value="normal" selected>Normal</option>
-                            <option value="high">High</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Due Date</label>
-                        <input type="date" class="form-input" name="due_date">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Assign To (optional)</label>
-                    <select class="form-select" name="assigned_to">
-                        <option value="">Unassigned</option>
-                        ${this.data.members.map(m => `<option value="${m.id}">${m.name}</option>`).join('')}
-                    </select>
-                </div>
-                <div class="form-actions">
-                    <button type="button" class="form-btn secondary" onclick="app.closeModal()">Cancel</button>
-                    <button type="submit" class="form-btn">Add Todo</button>
-                </div>
-            </form>
-        `;
-
-        this.showModal('Add Todo', content);
-
-        document.getElementById('add-todo-form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
-
-            try {
-                await this.sendCommand('famdo/add_todo', {
-                    title: formData.get('title'),
-                    description: formData.get('description') || '',
-                    priority: formData.get('priority'),
-                    due_date: formData.get('due_date') || null,
-                    assigned_to: formData.get('assigned_to') || null,
-                    created_by: this.selectedMember?.id || null
-                });
-                this.closeModal();
-                this.showToast('Todo added!', 'success');
-            } catch (error) {
-                this.showToast(`Failed: ${error.message}`, 'error');
-            }
-        });
-    }
-
-    showAddEventModal(presetDate = null) {
-        const content = `
-            <form id="add-event-form">
-                <div class="form-group">
-                    <label class="form-label">Event Title</label>
-                    <input type="text" class="form-input" name="title" required placeholder="e.g., Doctor's appointment">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Description (optional)</label>
-                    <textarea class="form-textarea" name="description" placeholder="Additional details..."></textarea>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">Start Date</label>
-                        <input type="date" class="form-input" name="start_date" required value="${presetDate || ''}">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">End Date (optional)</label>
-                        <input type="date" class="form-input" name="end_date">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">
-                        <input type="checkbox" name="all_day" checked> All day event
-                    </label>
-                </div>
-                <div class="form-row time-row" style="display: none;">
-                    <div class="form-group">
-                        <label class="form-label">Start Time</label>
-                        <input type="time" class="form-input" name="start_time">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">End Time</label>
-                        <input type="time" class="form-input" name="end_time">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Location (optional)</label>
-                    <input type="text" class="form-input" name="location" placeholder="Where is this event?">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Family Members</label>
-                    <div class="member-checkboxes">
-                        ${this.data.members.map(m => `
-                            <label style="display: flex; align-items: center; gap: 8px; margin: 8px 0;">
-                                <input type="checkbox" name="member_ids" value="${m.id}">
-                                <span class="member-dot" style="width: 16px; height: 16px; border-radius: 50%; background: ${m.color}"></span>
-                                ${m.name}
-                            </label>
-                        `).join('')}
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Recurrence</label>
-                    <select class="form-select" name="recurrence">
-                        <option value="none">Does not repeat</option>
-                        <option value="daily">Daily</option>
-                        <option value="weekly">Weekly</option>
-                        <option value="monthly">Monthly</option>
-                    </select>
-                </div>
-                <div class="form-actions">
-                    <button type="button" class="form-btn secondary" onclick="app.closeModal()">Cancel</button>
-                    <button type="submit" class="form-btn">Add Event</button>
-                </div>
-            </form>
-        `;
-
-        this.showModal('Add Event', content);
-
-        // Toggle time inputs based on all-day checkbox
-        const allDayCheckbox = document.querySelector('input[name="all_day"]');
-        const timeRow = document.querySelector('.time-row');
-        allDayCheckbox.addEventListener('change', () => {
-            timeRow.style.display = allDayCheckbox.checked ? 'none' : 'flex';
-        });
-
-        document.getElementById('add-event-form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
-            const memberIds = formData.getAll('member_ids');
-
-            try {
-                await this.sendCommand('famdo/add_event', {
-                    title: formData.get('title'),
-                    description: formData.get('description') || '',
-                    start_date: formData.get('start_date'),
-                    end_date: formData.get('end_date') || null,
-                    all_day: formData.has('all_day'),
-                    start_time: formData.get('start_time') || null,
-                    end_time: formData.get('end_time') || null,
-                    location: formData.get('location') || '',
-                    member_ids: memberIds,
-                    recurrence: formData.get('recurrence')
-                });
-                this.closeModal();
-                this.showToast('Event added!', 'success');
-            } catch (error) {
-                this.showToast(`Failed: ${error.message}`, 'error');
-            }
-        });
-    }
-
-    showChoreDetailsModal(choreId) {
-        const chore = this.data.chores.find(c => c.id === choreId);
-        if (!chore) return;
-
-        const assignedMember = this.data.members.find(m => m.id === chore.assigned_to);
-        const isParent = this.selectedMember?.role === 'parent';
-        const isRecurring = chore.template_id || chore.recurrence !== 'none';
-        const recurrenceLabels = {
-            'none': 'One time',
-            'always_on': 'Always On',
-            'daily': 'Daily',
-            'weekly': 'Weekly',
-            'monthly': 'Monthly'
-        };
-
-        const content = `
-            <div class="chore-details">
-                <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
-                    <div class="chore-icon" style="background: ${assignedMember?.color || '#4ECDC4'}">
-                        <span class="mdi ${chore.icon}"></span>
-                    </div>
-                    <div>
-                        <h3>
-                            ${chore.name}
-                            ${isRecurring ? `<span class="mdi mdi-refresh recurring-badge"></span>` : ''}
-                        </h3>
-                        <span class="chore-status ${chore.status}">${this.formatStatus(chore.status)}</span>
-                    </div>
-                </div>
-                ${chore.description ? `<p style="margin-bottom: 16px;">${chore.description}</p>` : ''}
-                <div style="display: flex; flex-wrap: wrap; gap: 24px; margin-bottom: 16px;">
-                    <div>
-                        <strong>Points:</strong> ${chore.points}
-                        ${chore.negative_points > 0 ? `<span class="negative-points">(-${chore.negative_points} if overdue)</span>` : ''}
-                    </div>
-                    <div>
-                        <strong>Recurrence:</strong> ${recurrenceLabels[chore.recurrence] || chore.recurrence}
-                    </div>
-                    ${isRecurring && chore.max_instances > 1 ? `
-                        <div>
-                            <strong>Max in queue:</strong> ${chore.max_instances}
-                        </div>
-                    ` : ''}
-                </div>
-                ${chore.due_date ? `
-                    <div style="margin-bottom: 16px;">
-                        <strong>Due:</strong> ${this.formatDate(chore.due_date)}${chore.due_time ? ` at ${chore.due_time}` : ''}
-                    </div>
-                ` : ''}
-                ${assignedMember ? `
-                    <div style="margin-bottom: 16px;">
-                        <strong>Assigned to:</strong> ${assignedMember.name}
-                    </div>
-                ` : ''}
-                ${chore.overdue_applied ? `
-                    <div style="margin-bottom: 16px; color: var(--danger);">
-                        <span class="mdi mdi-alert"></span> Overdue penalty applied
-                    </div>
-                ` : ''}
-                ${isParent ? `
-                    <div class="form-actions">
-                        <button type="button" class="form-btn primary" onclick="app.showEditChoreModal('${choreId}')">
-                            <span class="mdi mdi-pencil"></span> Edit
-                        </button>
-                        <button type="button" class="form-btn danger" onclick="app.deleteChore('${choreId}')">Delete</button>
-                    </div>
-                ` : ''}
-            </div>
-        `;
-
-        this.showModal('Chore Details', content);
-    }
-
     showEditChoreModal(choreId) {
         const chore = this.data.chores.find(c => c.id === choreId);
         if (!chore) return;
 
         const icons = ['mdi-broom', 'mdi-silverware-fork-knife', 'mdi-dog-side', 'mdi-bed', 'mdi-tshirt-crew', 'mdi-trash-can', 'mdi-vacuum', 'mdi-car-wash'];
-        const isRecurring = chore.template_id || chore.recurrence !== 'none';
+        const isRecurring = chore.is_template || chore.recurrence !== 'none';
 
         const content = `
             <form id="edit-chore-form">
@@ -1629,7 +1788,7 @@ class FamDoApp {
                         <select class="form-select" name="status">
                             <option value="pending" ${chore.status === 'pending' ? 'selected' : ''}>Available</option>
                             <option value="claimed" ${chore.status === 'claimed' ? 'selected' : ''}>In Progress</option>
-                            <option value="awaiting_approval" ${chore.status === 'awaiting_approval' ? 'selected' : ''}>Awaiting Approval</option>
+                            <option value="awaiting_approval" ${chore.status === 'awaiting_approval' ? 'selected' : ''}>Awaiting</option>
                             <option value="completed" ${chore.status === 'completed' ? 'selected' : ''}>Completed</option>
                             <option value="overdue" ${chore.status === 'overdue' ? 'selected' : ''}>Overdue</option>
                         </select>
@@ -1675,9 +1834,8 @@ class FamDoApp {
                     </div>
                 </div>
                 <div class="form-actions">
-                    <button type="button" class="form-btn danger" onclick="app.deleteChore('${choreId}')">Delete</button>
-                    <button type="button" class="form-btn secondary" onclick="app.closeModal()">Cancel</button>
-                    <button type="submit" class="form-btn">Save</button>
+                    <button type="button" class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save</button>
                 </div>
             </form>
         `;
@@ -1702,7 +1860,6 @@ class FamDoApp {
                 icon: icon
             };
 
-            // Include recurring fields if applicable
             if (isRecurring) {
                 updateData.negative_points = parseInt(formData.get('negative_points')) || 0;
                 updateData.max_instances = parseInt(formData.get('max_instances')) || 3;
@@ -1718,332 +1875,139 @@ class FamDoApp {
         });
     }
 
-    showRewardDetailsModal(rewardId) {
-        const reward = this.data.rewards.find(r => r.id === rewardId);
-        if (!reward) return;
-
-        const isParent = this.selectedMember?.role === 'parent';
+    showAddRewardModal() {
+        const icons = ['mdi-gift', 'mdi-gamepad-variant', 'mdi-ice-cream', 'mdi-movie', 'mdi-cash', 'mdi-star', 'mdi-trophy', 'mdi-crown'];
 
         const content = `
-            <div class="reward-details" style="text-align: center;">
-                <div class="reward-icon" style="margin: 0 auto 16px;">
-                    <span class="mdi ${reward.icon}"></span>
-                </div>
-                <h3>${reward.name}</h3>
-                ${reward.description ? `<p style="margin: 16px 0; color: var(--text-secondary);">${reward.description}</p>` : ''}
-                <div class="reward-cost" style="margin: 16px 0;">
-                    <span class="mdi mdi-star"></span>
-                    ${reward.points_cost} points
-                </div>
-                ${reward.quantity >= 0 ? `<p>Available: ${reward.quantity}</p>` : ''}
-                ${isParent ? `
-                    <div class="form-actions">
-                        <button type="button" class="form-btn danger" onclick="app.deleteReward('${rewardId}')">Delete Reward</button>
-                    </div>
-                ` : ''}
-            </div>
-        `;
-
-        this.showModal('Reward Details', content);
-    }
-
-    showTodoDetailsModal(todoId) {
-        const todo = this.data.todos.find(t => t.id === todoId);
-        if (!todo) return;
-
-        const assignedMember = this.data.members.find(m => m.id === todo.assigned_to);
-
-        const content = `
-            <div class="todo-details">
-                <h3>${todo.title}</h3>
-                <span class="todo-priority ${todo.priority}">${todo.priority}</span>
-                ${todo.description ? `<p style="margin: 16px 0;">${todo.description}</p>` : ''}
-                ${todo.due_date ? `
-                    <div style="margin-bottom: 16px;">
-                        <strong>Due:</strong> ${this.formatDate(todo.due_date)}
-                    </div>
-                ` : ''}
-                ${assignedMember ? `
-                    <div style="margin-bottom: 16px;">
-                        <strong>Assigned to:</strong> ${assignedMember.name}
-                    </div>
-                ` : ''}
-                <div class="form-actions">
-                    <button type="button" class="form-btn danger" onclick="app.deleteTodo('${todoId}')">Delete</button>
-                </div>
-            </div>
-        `;
-
-        this.showModal('Todo Details', content);
-    }
-
-    showDayEventsModal(dateStr) {
-        const dayEvents = this.data.events.filter(e => e.start_date === dateStr);
-        const dayChores = this.data.chores.filter(c => c.due_date === dateStr);
-        const dayHAEvents = this.haCalendarEvents.filter(e => {
-            if (!e.start) return false;
-            return this.parseToLocalDate(e.start) === dateStr;
-        });
-
-        const hasAnyContent = dayEvents.length > 0 || dayChores.length > 0 || dayHAEvents.length > 0;
-
-        const content = `
-            <div class="day-events">
-                <h3 style="margin-bottom: 16px;">${this.formatDate(dateStr)}</h3>
-                ${dayEvents.length > 0 ? `
-                    <h4 style="margin-bottom: 8px;">FamDo Events</h4>
-                    ${dayEvents.map(e => `
-                        <div class="event-item" style="border-color: ${e.color || '#4ECDC4'}">
-                            <div class="event-details">
-                                <div class="event-title">${e.title}</div>
-                                ${e.location ? `<div class="event-location"><span class="mdi mdi-map-marker"></span> ${e.location}</div>` : ''}
-                            </div>
-                        </div>
-                    `).join('')}
-                ` : ''}
-                ${dayHAEvents.length > 0 ? `
-                    <h4 style="margin: 16px 0 8px;">Calendar Events</h4>
-                    ${dayHAEvents.map(e => {
-                        const time = this.parseToLocalTime(e.start);
-                        const color = this.getCalendarColor(e.entity_id);
-                        return `
-                            <div class="event-item ha-event" style="border-color: ${color}">
-                                <div class="event-details">
-                                    <div class="event-title">${e.summary}</div>
-                                    ${time ? `<div class="event-time-inline"><span class="mdi mdi-clock-outline"></span> ${time}</div>` : ''}
-                                    ${e.location ? `<div class="event-location"><span class="mdi mdi-map-marker"></span> ${e.location}</div>` : ''}
-                                    <div class="event-source"><span class="mdi mdi-calendar-sync"></span> ${e.calendar_name}</div>
-                                </div>
-                            </div>
-                        `;
-                    }).join('')}
-                ` : ''}
-                ${dayChores.length > 0 ? `
-                    <h4 style="margin: 16px 0 8px;">Chores Due</h4>
-                    ${dayChores.map(c => {
-                        const member = this.data.members.find(m => m.id === c.assigned_to);
-                        return `
-                            <div class="event-item" style="border-color: ${member?.color || '#FF6B6B'}">
-                                <div class="event-details">
-                                    <div class="event-title">${c.name}</div>
-                                    <div style="font-size: 0.85rem; color: var(--text-secondary);">
-                                        ${c.points} pts ${member ? `- ${member.name}` : ''}
-                                    </div>
-                                </div>
-                            </div>
-                        `;
-                    }).join('')}
-                ` : ''}
-                ${!hasAnyContent ? `
-                    <p style="color: var(--text-secondary);">No events or chores for this day.</p>
-                ` : ''}
-                <div class="form-actions">
-                    <button type="button" class="form-btn" onclick="app.showAddEventModal('${dateStr}')">Add Event</button>
-                </div>
-            </div>
-        `;
-
-        this.showModal('Day Details', content);
-    }
-
-    async showSettingsModal() {
-        // Refresh HA calendars list
-        await this.loadHACalendars();
-        const selectedCalendars = this.data.settings?.selected_calendars || [];
-        const calendarColors = this.data.settings?.calendar_colors || {};
-        const timeFormat = this.data.settings?.time_format || '12h';
-        const defaultColors = ['#9B59B6', '#3498DB', '#E74C3C', '#2ECC71', '#F39C12', '#1ABC9C', '#E91E63', '#00BCD4'];
-
-        const content = `
-            <form id="settings-form">
+            <form id="add-reward-form">
                 <div class="form-group">
-                    <label class="form-label">Family Name</label>
-                    <input type="text" class="form-input" name="family_name" value="${this.data.family_name || ''}">
+                    <label class="form-label">Reward Name</label>
+                    <input type="text" class="form-input" name="name" required placeholder="e.g., Extra screen time">
                 </div>
                 <div class="form-group">
-                    <label class="form-label">
-                        <span class="mdi mdi-clock-outline"></span> Time Format
-                    </label>
-                    <div class="time-format-toggle">
-                        <label class="toggle-option ${timeFormat === '12h' ? 'active' : ''}">
-                            <input type="radio" name="time_format" value="12h" ${timeFormat === '12h' ? 'checked' : ''}>
-                            <span>12-hour (AM/PM)</span>
-                        </label>
-                        <label class="toggle-option ${timeFormat === '24h' ? 'active' : ''}">
-                            <input type="radio" name="time_format" value="24h" ${timeFormat === '24h' ? 'checked' : ''}>
-                            <span>24-hour</span>
-                        </label>
+                    <label class="form-label">Description</label>
+                    <textarea class="form-textarea" name="description" placeholder="What does this reward include?"></textarea>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Points Cost</label>
+                        <input type="number" class="form-input" name="points_cost" value="50" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Quantity (-1 = unlimited)</label>
+                        <input type="number" class="form-input" name="quantity" value="-1" min="-1">
                     </div>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">
-                        <span class="mdi mdi-calendar-sync"></span> Calendar Sources
-                    </label>
-                    <p class="form-help">Select Home Assistant calendars to display and choose their colors</p>
-                    <div class="calendar-sources">
-                        ${this.haCalendars.length === 0 ? `
-                            <p class="empty-state-small">No calendar integrations found in Home Assistant. Add a calendar integration (Google Calendar, Office 365, etc.) to see it here.</p>
-                        ` : this.haCalendars.map((cal, index) => {
-                            const currentColor = calendarColors[cal.entity_id] || defaultColors[index % defaultColors.length];
-                            return `
-                            <div class="calendar-source-row">
-                                <label class="calendar-source-option">
-                                    <input type="checkbox" name="selected_calendars" value="${cal.entity_id}"
-                                        ${selectedCalendars.includes(cal.entity_id) ? 'checked' : ''}>
-                                    <span class="mdi mdi-calendar"></span>
-                                    <span class="calendar-source-name">${cal.name}</span>
-                                </label>
-                                <input type="color" class="calendar-color-picker"
-                                    data-entity-id="${cal.entity_id}"
-                                    value="${currentColor}"
-                                    title="Choose color for ${cal.name}">
+                    <label class="form-label">Icon</label>
+                    <div class="icon-picker">
+                        ${icons.map((icon, i) => `
+                            <div class="icon-option ${i === 0 ? 'selected' : ''}" data-icon="${icon}">
+                                <span class="mdi ${icon}"></span>
                             </div>
-                        `}).join('')}
+                        `).join('')}
                     </div>
                 </div>
                 <div class="form-actions">
-                    <button type="button" class="form-btn secondary" onclick="app.closeModal()">Cancel</button>
-                    <button type="submit" class="form-btn">Save</button>
+                    <button type="button" class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add Reward</button>
                 </div>
             </form>
         `;
 
-        this.showModal('Settings', content);
+        this.showModal('Add Reward', content);
+        this.setupIconPicker();
 
-        // Setup time format toggle interactivity
-        document.querySelectorAll('.time-format-toggle input').forEach(input => {
-            input.addEventListener('change', () => {
-                document.querySelectorAll('.toggle-option').forEach(opt => opt.classList.remove('active'));
-                input.closest('.toggle-option').classList.add('active');
-            });
-        });
-
-        document.getElementById('settings-form').addEventListener('submit', async (e) => {
+        document.getElementById('add-reward-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const formData = new FormData(e.target);
-            const calendars = formData.getAll('selected_calendars');
-
-            // Collect calendar colors
-            const colors = {};
-            document.querySelectorAll('.calendar-color-picker').forEach(picker => {
-                colors[picker.dataset.entityId] = picker.value;
-            });
+            const icon = document.querySelector('.icon-picker .icon-option.selected')?.dataset.icon || 'mdi-gift';
 
             try {
-                await this.sendCommand('famdo/update_settings', {
-                    family_name: formData.get('family_name'),
-                    time_format: formData.get('time_format'),
-                    selected_calendars: calendars,
-                    calendar_colors: colors
+                await this.sendCommand('famdo/add_reward', {
+                    name: formData.get('name'),
+                    description: formData.get('description') || '',
+                    points_cost: parseInt(formData.get('points_cost')) || 50,
+                    quantity: parseInt(formData.get('quantity')) || -1,
+                    icon: icon
                 });
                 this.closeModal();
-                this.showToast('Settings saved!', 'success');
-                // Refresh calendar display with new sources
-                this.renderCalendar();
+                this.showToast('Reward added!', 'success');
             } catch (error) {
                 this.showToast(`Failed: ${error.message}`, 'error');
             }
         });
     }
 
-    // ==================== Delete Actions ====================
+    showEditRewardModal(rewardId) {
+        const reward = this.data.rewards.find(r => r.id === rewardId);
+        if (!reward) return;
 
-    async deleteChore(choreId) {
-        if (!confirm('Are you sure you want to delete this chore?')) return;
+        const icons = ['mdi-gift', 'mdi-gamepad-variant', 'mdi-ice-cream', 'mdi-movie', 'mdi-cash', 'mdi-star', 'mdi-trophy', 'mdi-crown'];
 
-        try {
-            await this.sendCommand('famdo/delete_chore', { chore_id: choreId });
-            this.closeModal();
-            this.showToast('Chore deleted', 'success');
-        } catch (error) {
-            this.showToast(`Failed: ${error.message}`, 'error');
-        }
-    }
+        const content = `
+            <form id="edit-reward-form">
+                <div class="form-group">
+                    <label class="form-label">Reward Name</label>
+                    <input type="text" class="form-input" name="name" required value="${reward.name}">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Description</label>
+                    <textarea class="form-textarea" name="description">${reward.description || ''}</textarea>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Points Cost</label>
+                        <input type="number" class="form-input" name="points_cost" value="${reward.points_cost}" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Quantity (-1 = unlimited)</label>
+                        <input type="number" class="form-input" name="quantity" value="${reward.quantity}" min="-1">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Icon</label>
+                    <div class="icon-picker">
+                        ${icons.map(icon => `
+                            <div class="icon-option ${icon === reward.icon ? 'selected' : ''}" data-icon="${icon}">
+                                <span class="mdi ${icon}"></span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save</button>
+                </div>
+            </form>
+        `;
 
-    async deleteReward(rewardId) {
-        if (!confirm('Are you sure you want to delete this reward?')) return;
+        this.showModal('Edit Reward', content);
+        this.setupIconPicker();
 
-        try {
-            await this.sendCommand('famdo/delete_reward', { reward_id: rewardId });
-            this.closeModal();
-            this.showToast('Reward deleted', 'success');
-        } catch (error) {
-            this.showToast(`Failed: ${error.message}`, 'error');
-        }
-    }
+        document.getElementById('edit-reward-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const icon = document.querySelector('.icon-picker .icon-option.selected')?.dataset.icon || reward.icon;
 
-    async deleteTodo(todoId) {
-        if (!confirm('Are you sure you want to delete this todo?')) return;
-
-        try {
-            await this.sendCommand('famdo/delete_todo', { todo_id: todoId });
-            this.closeModal();
-            this.showToast('Todo deleted', 'success');
-        } catch (error) {
-            this.showToast(`Failed: ${error.message}`, 'error');
-        }
+            try {
+                await this.sendCommand('famdo/update_reward', {
+                    reward_id: rewardId,
+                    name: formData.get('name'),
+                    description: formData.get('description') || '',
+                    points_cost: parseInt(formData.get('points_cost')) || 50,
+                    quantity: parseInt(formData.get('quantity')) || -1,
+                    icon: icon
+                });
+                this.closeModal();
+                this.showToast('Reward updated!', 'success');
+            } catch (error) {
+                this.showToast(`Failed: ${error.message}`, 'error');
+            }
+        });
     }
 
     // ==================== Utilities ====================
-
-    /**
-     * Format a date as YYYY-MM-DD in local timezone
-     */
-    formatDateLocal(date) {
-        const year = date.getFullYear();
-        const month = String(date.getMonth() + 1).padStart(2, '0');
-        const day = String(date.getDate()).padStart(2, '0');
-        return `${year}-${month}-${day}`;
-    }
-
-    /**
-     * Parse an ISO date string and return the local date as YYYY-MM-DD
-     * Handles both datetime strings (with T) and date-only strings
-     */
-    parseToLocalDate(isoString) {
-        if (!isoString) return null;
-        // If it's already a date-only string (no time component), return as-is
-        if (!isoString.includes('T')) {
-            return isoString.split(' ')[0]; // Handle "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
-        }
-        // Parse the ISO string and convert to local date
-        const date = new Date(isoString);
-        return this.formatDateLocal(date);
-    }
-
-    /**
-     * Parse an ISO date string and return the local time
-     * Uses the time_format setting (12h or 24h)
-     */
-    parseToLocalTime(isoString) {
-        if (!isoString || !isoString.includes('T')) return null;
-        const date = new Date(isoString);
-        return this.formatTime(date.getHours(), date.getMinutes());
-    }
-
-    /**
-     * Format time based on user preference (12h or 24h)
-     */
-    formatTime(hours, minutes) {
-        const timeFormat = this.data?.settings?.time_format || '12h';
-        const mins = String(minutes).padStart(2, '0');
-
-        if (timeFormat === '24h') {
-            return `${String(hours).padStart(2, '0')}:${mins}`;
-        } else {
-            const period = hours >= 12 ? 'PM' : 'AM';
-            const hour12 = hours % 12 || 12;
-            return `${hour12}:${mins} ${period}`;
-        }
-    }
-
-    /**
-     * Get color for a calendar entity
-     */
-    getCalendarColor(entityId) {
-        const colors = this.data?.settings?.calendar_colors || {};
-        return colors[entityId] || '#9B59B6';  // Default purple
-    }
 
     setupColorPicker() {
         document.querySelector('.color-picker')?.addEventListener('click', (e) => {
@@ -2067,7 +2031,7 @@ class FamDoApp {
         const labels = {
             'pending': 'Available',
             'claimed': 'In Progress',
-            'awaiting_approval': 'Awaiting Approval',
+            'awaiting_approval': 'Awaiting',
             'completed': 'Completed',
             'overdue': 'Overdue',
             'rejected': 'Rejected'
@@ -2078,10 +2042,34 @@ class FamDoApp {
     formatDate(dateStr) {
         if (!dateStr) return '';
         const date = new Date(dateStr + 'T00:00:00');
+        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+
+    formatDateTime(dateStr) {
+        if (!dateStr) return '';
+        const date = new Date(dateStr);
         return date.toLocaleDateString('en-US', {
             month: 'short',
-            day: 'numeric'
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit'
         });
+    }
+
+    formatRelativeTime(dateStr) {
+        if (!dateStr) return '';
+        const date = new Date(dateStr);
+        const now = new Date();
+        const diff = now - date;
+        const minutes = Math.floor(diff / 60000);
+        const hours = Math.floor(diff / 3600000);
+        const days = Math.floor(diff / 86400000);
+
+        if (minutes < 1) return 'Just now';
+        if (minutes < 60) return `${minutes}m ago`;
+        if (hours < 24) return `${hours}h ago`;
+        if (days < 7) return `${days}d ago`;
+        return this.formatDate(dateStr);
     }
 
     showToast(message, type = 'info') {
@@ -2114,4 +2102,4 @@ class FamDoApp {
 }
 
 // Initialize the app
-const app = new FamDoApp();
+const app = new FamDoAdminApp();

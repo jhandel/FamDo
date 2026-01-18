@@ -2,135 +2,392 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="mobile-web-app-capable" content="yes">
-    <title>FamDo - Family Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FamDo Admin Console</title>
     <link rel="stylesheet" href="styles.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css">
 </head>
 <body>
-    <div id="app">
-        <!-- Header -->
-        <header class="app-header">
-            <div class="header-left">
+    <div id="app" class="admin-layout">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
                 <span class="mdi mdi-home-heart"></span>
-                <h1 id="family-name">FamDo</h1>
+                <span class="sidebar-title">FamDo Admin</span>
             </div>
-            <div class="header-right">
-                <button class="icon-btn" id="settings-btn" aria-label="Settings">
-                    <span class="mdi mdi-cog"></span>
+
+            <nav class="sidebar-nav">
+                <button class="nav-item active" data-tab="dashboard">
+                    <span class="mdi mdi-view-dashboard"></span>
+                    <span class="nav-label">Dashboard</span>
                 </button>
+                <button class="nav-item" data-tab="members">
+                    <span class="mdi mdi-account-group"></span>
+                    <span class="nav-label">Members</span>
+                    <span class="nav-badge" id="members-count">0</span>
+                </button>
+                <button class="nav-item" data-tab="chores">
+                    <span class="mdi mdi-broom"></span>
+                    <span class="nav-label">Chores</span>
+                    <span class="nav-badge pending" id="chores-pending">0</span>
+                </button>
+                <button class="nav-item" data-tab="rewards">
+                    <span class="mdi mdi-gift"></span>
+                    <span class="nav-label">Rewards</span>
+                    <span class="nav-badge pending" id="rewards-pending">0</span>
+                </button>
+                <button class="nav-item" data-tab="settings">
+                    <span class="mdi mdi-cog"></span>
+                    <span class="nav-label">Settings</span>
+                </button>
+            </nav>
+
+            <div class="sidebar-footer">
+                <span class="mdi mdi-home"></span>
+                <span id="family-name">My Family</span>
             </div>
+        </aside>
+
+        <!-- Mobile Header (shown on small screens) -->
+        <header class="mobile-header" id="mobile-header">
+            <button class="icon-btn" id="menu-toggle">
+                <span class="mdi mdi-menu"></span>
+            </button>
+            <h1 id="mobile-title">Dashboard</h1>
+            <div class="mobile-header-spacer"></div>
         </header>
 
-        <!-- Member Selector -->
-        <div class="member-selector" id="member-selector">
-            <!-- Members will be populated here -->
-        </div>
-
-        <!-- Navigation Tabs -->
-        <nav class="tab-nav">
-            <button class="tab-btn active" data-tab="chores">
-                <span class="mdi mdi-broom"></span>
-                <span>Chores</span>
-            </button>
-            <button class="tab-btn" data-tab="rewards">
-                <span class="mdi mdi-gift"></span>
-                <span>Rewards</span>
-            </button>
-            <button class="tab-btn" data-tab="todos">
-                <span class="mdi mdi-format-list-checks"></span>
-                <span>Todos</span>
-            </button>
-            <button class="tab-btn" data-tab="calendar">
-                <span class="mdi mdi-calendar"></span>
-                <span>Calendar</span>
-            </button>
-        </nav>
-
-        <!-- Main Content -->
+        <!-- Main Content Area -->
         <main class="main-content">
-            <!-- Chores Tab -->
-            <section class="tab-content active" id="chores-tab">
-                <div class="section-header">
-                    <h2>Chores</h2>
-                    <button class="add-btn" id="add-chore-btn">
-                        <span class="mdi mdi-plus"></span>
-                    </button>
+            <!-- Page Header -->
+            <header class="page-header" id="page-header">
+                <div class="page-header-left">
+                    <h1 id="page-title">Dashboard</h1>
+                    <p class="page-subtitle" id="page-subtitle">Overview of your family's activities</p>
                 </div>
-                <div class="chore-filters">
-                    <button class="filter-btn active" data-filter="all">All</button>
-                    <button class="filter-btn" data-filter="pending">Available</button>
-                    <button class="filter-btn" data-filter="claimed">In Progress</button>
-                    <button class="filter-btn" data-filter="awaiting_approval">Awaiting Approval</button>
+                <div class="page-header-actions" id="page-actions">
+                    <!-- Actions populated by JavaScript -->
                 </div>
-                <div class="cards-grid" id="chores-list">
-                    <!-- Chores will be populated here -->
-                </div>
-            </section>
+            </header>
 
-            <!-- Rewards Tab -->
-            <section class="tab-content" id="rewards-tab">
-                <div class="section-header">
-                    <h2>Rewards</h2>
-                    <button class="add-btn parent-only" id="add-reward-btn">
-                        <span class="mdi mdi-plus"></span>
-                    </button>
-                </div>
-                <div class="cards-grid" id="rewards-list">
-                    <!-- Rewards will be populated here -->
-                </div>
-            </section>
-
-            <!-- Todos Tab -->
-            <section class="tab-content" id="todos-tab">
-                <div class="section-header">
-                    <h2>Todos</h2>
-                    <button class="add-btn" id="add-todo-btn">
-                        <span class="mdi mdi-plus"></span>
-                    </button>
-                </div>
-                <div class="todo-filters">
-                    <button class="filter-btn active" data-filter="active">Active</button>
-                    <button class="filter-btn" data-filter="completed">Completed</button>
-                    <button class="filter-btn" data-filter="all">All</button>
-                </div>
-                <div class="todo-list" id="todos-list">
-                    <!-- Todos will be populated here -->
-                </div>
-            </section>
-
-            <!-- Calendar Tab -->
-            <section class="tab-content" id="calendar-tab">
-                <div class="section-header">
-                    <h2>Calendar</h2>
-                    <button class="add-btn" id="add-event-btn">
-                        <span class="mdi mdi-plus"></span>
-                    </button>
-                </div>
-                <div class="calendar-nav">
-                    <button class="icon-btn" id="prev-month">
-                        <span class="mdi mdi-chevron-left"></span>
-                    </button>
-                    <h3 id="current-month">January 2024</h3>
-                    <button class="icon-btn" id="next-month">
-                        <span class="mdi mdi-chevron-right"></span>
-                    </button>
-                </div>
-                <div class="calendar-grid" id="calendar-grid">
-                    <!-- Calendar will be populated here -->
-                </div>
-                <div class="events-today">
-                    <h3>Upcoming Events</h3>
-                    <div id="events-list">
-                        <!-- Events will be populated here -->
+            <!-- Content Container -->
+            <div class="content-container">
+                <!-- Dashboard Tab -->
+                <section class="tab-content active" id="dashboard-tab">
+                    <!-- Stats Row -->
+                    <div class="stats-row" id="stats-row">
+                        <!-- Stats cards populated by JS -->
                     </div>
-                </div>
-            </section>
+
+                    <!-- Dashboard Grid -->
+                    <div class="dashboard-grid">
+                        <!-- Pending Approvals -->
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3><span class="mdi mdi-clock-check-outline"></span> Pending Approvals</h3>
+                                <button class="btn-text" id="approve-all-btn" style="display: none;">
+                                    Approve All
+                                </button>
+                            </div>
+                            <div class="card-body" id="pending-approvals">
+                                <!-- Populated by JS -->
+                            </div>
+                        </div>
+
+                        <!-- Pending Reward Claims -->
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3><span class="mdi mdi-gift-outline"></span> Pending Rewards</h3>
+                            </div>
+                            <div class="card-body" id="pending-rewards">
+                                <!-- Populated by JS -->
+                            </div>
+                        </div>
+
+                        <!-- Recent Activity -->
+                        <div class="dashboard-card full-width">
+                            <div class="card-header">
+                                <h3><span class="mdi mdi-history"></span> Recent Activity</h3>
+                                <select class="filter-select" id="activity-filter">
+                                    <option value="all">All Activity</option>
+                                    <option value="chore_completed">Chores</option>
+                                    <option value="reward">Rewards</option>
+                                </select>
+                            </div>
+                            <div class="card-body scrollable" id="activity-feed">
+                                <!-- Populated by JS -->
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Members Tab -->
+                <section class="tab-content" id="members-tab">
+                    <div class="data-table-container">
+                        <table class="data-table" id="members-table">
+                            <thead>
+                                <tr>
+                                    <th>Member</th>
+                                    <th>Role</th>
+                                    <th class="text-right">Points</th>
+                                    <th class="text-right">Completed</th>
+                                    <th class="text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="members-tbody">
+                                <!-- Populated by JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- Chores Tab -->
+                <section class="tab-content" id="chores-tab">
+                    <!-- Sub-tabs -->
+                    <div class="sub-tabs" id="chores-subtabs">
+                        <button class="sub-tab active" data-subtab="active">Active</button>
+                        <button class="sub-tab" data-subtab="completed">Completed</button>
+                        <button class="sub-tab" data-subtab="templates">Templates</button>
+                    </div>
+
+                    <!-- Active Chores Sub-tab -->
+                    <div class="sub-content active" id="chores-active">
+                        <div class="table-toolbar">
+                            <div class="toolbar-left">
+                                <select class="filter-select" id="chore-status-filter">
+                                    <option value="all">All Status</option>
+                                    <option value="pending">Available</option>
+                                    <option value="claimed">In Progress</option>
+                                    <option value="awaiting_approval">Awaiting Approval</option>
+                                    <option value="overdue">Overdue</option>
+                                    <option value="rejected">Rejected</option>
+                                </select>
+                            </div>
+                            <div class="toolbar-right">
+                                <button class="btn btn-primary" id="bulk-approve-btn" style="display: none;">
+                                    <span class="mdi mdi-check-all"></span> Approve Selected
+                                </button>
+                            </div>
+                        </div>
+                        <div class="data-table-container">
+                            <table class="data-table" id="chores-table">
+                                <thead>
+                                    <tr>
+                                        <th class="checkbox-col">
+                                            <input type="checkbox" id="chore-select-all">
+                                        </th>
+                                        <th>Chore</th>
+                                        <th>Status</th>
+                                        <th>Assigned</th>
+                                        <th class="text-right">Points</th>
+                                        <th>Due</th>
+                                        <th class="text-right">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="chores-tbody">
+                                    <!-- Populated by JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Completed History Sub-tab -->
+                    <div class="sub-content" id="chores-completed">
+                        <div class="table-toolbar">
+                            <div class="toolbar-left">
+                                <input type="date" class="form-input" id="completed-date-from" placeholder="From">
+                                <input type="date" class="form-input" id="completed-date-to" placeholder="To">
+                            </div>
+                        </div>
+                        <div class="data-table-container">
+                            <table class="data-table" id="completed-table">
+                                <thead>
+                                    <tr>
+                                        <th>Chore</th>
+                                        <th>Completed By</th>
+                                        <th>Completed At</th>
+                                        <th class="text-right">Points</th>
+                                        <th>Approved By</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="completed-tbody">
+                                    <!-- Populated by JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Templates Sub-tab -->
+                    <div class="sub-content" id="chores-templates">
+                        <div class="data-table-container">
+                            <table class="data-table" id="templates-table">
+                                <thead>
+                                    <tr>
+                                        <th>Template</th>
+                                        <th>Recurrence</th>
+                                        <th class="text-right">Points</th>
+                                        <th class="text-right">Penalty</th>
+                                        <th class="text-right">Max Queue</th>
+                                        <th class="text-right">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="templates-tbody">
+                                    <!-- Populated by JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Rewards Tab -->
+                <section class="tab-content" id="rewards-tab">
+                    <!-- Sub-tabs -->
+                    <div class="sub-tabs" id="rewards-subtabs">
+                        <button class="sub-tab active" data-subtab="catalog">Catalog</button>
+                        <button class="sub-tab" data-subtab="pending">Pending Claims</button>
+                        <button class="sub-tab" data-subtab="history">History</button>
+                    </div>
+
+                    <!-- Catalog Sub-tab -->
+                    <div class="sub-content active" id="rewards-catalog">
+                        <div class="data-table-container">
+                            <table class="data-table" id="rewards-table">
+                                <thead>
+                                    <tr>
+                                        <th>Reward</th>
+                                        <th class="text-right">Cost</th>
+                                        <th class="text-right">Quantity</th>
+                                        <th>Status</th>
+                                        <th class="text-right">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="rewards-tbody">
+                                    <!-- Populated by JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Pending Claims Sub-tab -->
+                    <div class="sub-content" id="rewards-pending">
+                        <div class="table-toolbar">
+                            <div class="toolbar-right">
+                                <button class="btn btn-primary" id="bulk-fulfill-btn" style="display: none;">
+                                    <span class="mdi mdi-check-all"></span> Fulfill Selected
+                                </button>
+                            </div>
+                        </div>
+                        <div class="data-table-container">
+                            <table class="data-table" id="claims-table">
+                                <thead>
+                                    <tr>
+                                        <th class="checkbox-col">
+                                            <input type="checkbox" id="claim-select-all">
+                                        </th>
+                                        <th>Member</th>
+                                        <th>Reward</th>
+                                        <th class="text-right">Points</th>
+                                        <th>Claimed At</th>
+                                        <th class="text-right">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="claims-tbody">
+                                    <!-- Populated by JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- History Sub-tab -->
+                    <div class="sub-content" id="rewards-history">
+                        <div class="table-toolbar">
+                            <div class="toolbar-left">
+                                <select class="filter-select" id="history-member-filter">
+                                    <option value="all">All Members</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="data-table-container">
+                            <table class="data-table" id="history-table">
+                                <thead>
+                                    <tr>
+                                        <th>Member</th>
+                                        <th>Reward</th>
+                                        <th class="text-right">Points</th>
+                                        <th>Status</th>
+                                        <th>Date</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="history-tbody">
+                                    <!-- Populated by JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Settings Tab -->
+                <section class="tab-content" id="settings-tab">
+                    <div class="settings-container">
+                        <form id="settings-form">
+                            <div class="settings-section">
+                                <h3>General</h3>
+                                <div class="form-group">
+                                    <label class="form-label">Family Name</label>
+                                    <input type="text" class="form-input" name="family_name" id="setting-family-name">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">Time Format</label>
+                                    <div class="time-format-toggle">
+                                        <label class="toggle-option active">
+                                            <input type="radio" name="time_format" value="12h" checked>
+                                            <span>12-hour (AM/PM)</span>
+                                        </label>
+                                        <label class="toggle-option">
+                                            <input type="radio" name="time_format" value="24h">
+                                            <span>24-hour</span>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="settings-section">
+                                <h3>Calendar Integration</h3>
+                                <p class="form-help">Select Home Assistant calendars to display</p>
+                                <div class="calendar-sources" id="calendar-sources">
+                                    <!-- Populated by JS -->
+                                </div>
+                            </div>
+
+                            <div class="form-actions">
+                                <button type="submit" class="btn btn-primary">
+                                    <span class="mdi mdi-content-save"></span> Save Settings
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </section>
+            </div>
         </main>
 
-        <!-- Modals -->
+        <!-- Side Drawer (for member details, etc.) -->
+        <div class="drawer-overlay" id="drawer-overlay"></div>
+        <aside class="side-drawer" id="side-drawer">
+            <div class="drawer-header">
+                <h2 id="drawer-title">Details</h2>
+                <button class="icon-btn drawer-close" id="drawer-close">
+                    <span class="mdi mdi-close"></span>
+                </button>
+            </div>
+            <div class="drawer-body" id="drawer-body">
+                <!-- Populated by JS -->
+            </div>
+            <div class="drawer-footer" id="drawer-footer">
+                <!-- Optional footer actions -->
+            </div>
+        </aside>
+
+        <!-- Modal -->
         <div class="modal-overlay" id="modal-overlay">
             <div class="modal" id="modal">
                 <div class="modal-header">
