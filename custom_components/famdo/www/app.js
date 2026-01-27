@@ -318,15 +318,11 @@ class FamDoAdminApp {
             }
         });
 
-        // Modal close
+        // Modal close - only via explicit close button, not overlay click
         document.getElementById('modal-close')?.addEventListener('click', () => this.closeModal());
-        document.getElementById('modal-overlay')?.addEventListener('click', (e) => {
-            if (e.target === e.currentTarget) this.closeModal();
-        });
 
-        // Drawer close
+        // Drawer close - only via explicit close button, not overlay click
         document.getElementById('drawer-close')?.addEventListener('click', () => this.closeDrawer());
-        document.getElementById('drawer-overlay')?.addEventListener('click', () => this.closeDrawer());
 
         // Sub-tabs for chores
         document.getElementById('chores-subtabs')?.addEventListener('click', (e) => {
