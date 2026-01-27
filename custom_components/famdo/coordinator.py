@@ -13,6 +13,7 @@ from .const import (
     EVENT_CHORE_COMPLETED,
     EVENT_POINTS_UPDATED,
     EVENT_REWARD_CLAIMED,
+    EVENT_REWARD_FULFILLED,
     CHORE_STATUS_PENDING,
     CHORE_STATUS_CLAIMED,
     CHORE_STATUS_AWAITING_APPROVAL,
@@ -454,13 +455,12 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
                 # Check if we're under the max instances limit
                 active_count = self._count_active_instances(template.id)
                 if active_count < template.max_instances:
-                    # Auto-assign to the same person who completed this chore
-                    new_assigned_to = chore.claimed_by or chore.assigned_to
-                    await self._create_chore_instance(template, assigned_to=new_assigned_to)
+                    # Use the template's assignment (None if unassigned/open to anyone)
+                    await self._create_chore_instance(template, assigned_to=template.assigned_to)
                     _LOGGER.info(
                         "Created new always-on instance for chore: %s (assigned to: %s)",
                         template.name,
-                        new_assigned_to
+                        template.assigned_to
                     )
 
         await self.store.async_save()
@@ -623,6 +623,75 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         self.async_set_updated_data(self._data)
         return True
 
+    async def async_fulfill_reward_claim(
+        self, claim_id: str, fulfiller_id: str
+    ) -> RewardClaim | None:
+        """Mark a reward claim as fulfilled (delivered to recipient).
+
+        Args:
+            claim_id: The ID of the claim to fulfill
+            fulfiller_id: The ID of the parent fulfilling the claim
+        """
+        claim = self.famdo_data.get_reward_claim_by_id(claim_id)
+        if claim is None:
+            return None
+
+        # Verify fulfiller is a parent
+        fulfiller = self.famdo_data.get_member_by_id(fulfiller_id)
+        if fulfiller is None or fulfiller.role != ROLE_PARENT:
+            _LOGGER.warning("Only parents can fulfill reward claims")
+            return None
+
+        # Can only fulfill pending claims
+        if claim.status != "pending":
+            return None
+
+        claim.status = "fulfilled"
+        claim.fulfilled_at = datetime.now().isoformat()
+
+        self.hass.bus.async_fire(
+            EVENT_REWARD_FULFILLED,
+            {
+                "claim_id": claim_id,
+                "reward_id": claim.reward_id,
+                "member_id": claim.member_id,
+                "fulfiller_id": fulfiller_id,
+            },
+        )
+
+        await self.store.async_save()
+        self.async_set_updated_data(self._data)
+        return claim
+
+    async def async_update_reward_claim(
+        self,
+        claim_id: str,
+        **kwargs: Any,
+    ) -> RewardClaim | None:
+        """Update a reward claim."""
+        claim = self.famdo_data.get_reward_claim_by_id(claim_id)
+        if claim is None:
+            return None
+
+        for key, value in kwargs.items():
+            if hasattr(claim, key):
+                setattr(claim, key, value)
+
+        await self.store.async_save()
+        self.async_set_updated_data(self._data)
+        return claim
+
+    async def async_delete_reward_claim(self, claim_id: str) -> bool:
+        """Delete a reward claim."""
+        claim = self.famdo_data.get_reward_claim_by_id(claim_id)
+        if claim is None:
+            return False
+
+        self.famdo_data.reward_claims.remove(claim)
+        await self.store.async_save()
+        self.async_set_updated_data(self._data)
+        return True
+
     # ==================== Todo Management ====================
 
     async def async_add_todo(
@@ -763,3 +832,140 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         await self.store.async_save()
         self.async_set_updated_data(self._data)
         return name
+
+    # ==================== Bulk Delete Operations ====================
+
+    async def async_delete_all_chores(self, keep_templates: bool = False) -> int:
+        """Delete all chores.
+
+        Args:
+            keep_templates: If True, keeps recurring chore templates
+
+        Returns:
+            Number of chores deleted
+        """
+        if keep_templates:
+            to_delete = [c for c in self.famdo_data.chores if not c.is_template]
+        else:
+            to_delete = list(self.famdo_data.chores)
+
+        count = len(to_delete)
+        for chore in to_delete:
+            self.famdo_data.chores.remove(chore)
+
+        await self.store.async_save()
+        self.async_set_updated_data(self._data)
+        _LOGGER.info("Deleted %d chores (keep_templates=%s)", count, keep_templates)
+        return count
+
+    async def async_delete_all_rewards(self) -> int:
+        """Delete all rewards.
+
+        Returns:
+            Number of rewards deleted
+        """
+        count = len(self.famdo_data.rewards)
+        self.famdo_data.rewards.clear()
+        await self.store.async_save()
+        self.async_set_updated_data(self._data)
+        _LOGGER.info("Deleted %d rewards", count)
+        return count
+
+    async def async_delete_all_reward_claims(self) -> int:
+        """Delete all reward claims.
+
+        Returns:
+            Number of reward claims deleted
+        """
+        count = len(self.famdo_data.reward_claims)
+        self.famdo_data.reward_claims.clear()
+        await self.store.async_save()
+        self.async_set_updated_data(self._data)
+        _LOGGER.info("Deleted %d reward claims", count)
+        return count
+
+    async def async_delete_all_todos(self) -> int:
+        """Delete all todo items.
+
+        Returns:
+            Number of todos deleted
+        """
+        count = len(self.famdo_data.todos)
+        self.famdo_data.todos.clear()
+        await self.store.async_save()
+        self.async_set_updated_data(self._data)
+        _LOGGER.info("Deleted %d todos", count)
+        return count
+
+    async def async_delete_all_events(self) -> int:
+        """Delete all calendar events.
+
+        Returns:
+            Number of events deleted
+        """
+        count = len(self.famdo_data.events)
+        self.famdo_data.events.clear()
+        await self.store.async_save()
+        self.async_set_updated_data(self._data)
+        _LOGGER.info("Deleted %d events", count)
+        return count
+
+    async def async_delete_all_members(self) -> int:
+        """Delete all family members.
+
+        Returns:
+            Number of members deleted
+        """
+        count = len(self.famdo_data.members)
+        self.famdo_data.members.clear()
+        await self.store.async_save()
+        self.async_set_updated_data(self._data)
+        _LOGGER.info("Deleted %d members", count)
+        return count
+
+    async def async_clear_all_data(self, keep_members: bool = False) -> dict:
+        """Clear all data - reset the entire installation.
+
+        Args:
+            keep_members: If True, keeps family members but resets their points
+
+        Returns:
+            Dict with counts of deleted items
+        """
+        counts = {
+            "chores": len(self.famdo_data.chores),
+            "rewards": len(self.famdo_data.rewards),
+            "reward_claims": len(self.famdo_data.reward_claims),
+            "todos": len(self.famdo_data.todos),
+            "events": len(self.famdo_data.events),
+            "members": 0 if keep_members else len(self.famdo_data.members),
+        }
+
+        # Clear all data lists
+        self.famdo_data.chores.clear()
+        self.famdo_data.rewards.clear()
+        self.famdo_data.reward_claims.clear()
+        self.famdo_data.todos.clear()
+        self.famdo_data.events.clear()
+
+        if keep_members:
+            # Reset points for all members
+            for member in self.famdo_data.members:
+                member.points = 0
+        else:
+            self.famdo_data.members.clear()
+
+        # Reset settings to defaults (keep family name if keeping members)
+        if not keep_members:
+            self.famdo_data.family_name = "Our Family"
+        self.famdo_data.settings = {}
+
+        await self.store.async_save()
+        self.async_set_updated_data(self._data)
+
+        _LOGGER.warning(
+            "Cleared all data (keep_members=%s): %s",
+            keep_members,
+            counts,
+        )
+        return counts

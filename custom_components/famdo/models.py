@@ -29,6 +29,7 @@ class FamilyMember:
     avatar: str = "mdi:account"
     points: int = 0
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    ha_user_id: Optional[str] = None  # Link to Home Assistant user ID for auth
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -37,6 +38,8 @@ class FamilyMember:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> FamilyMember:
         """Create from dictionary."""
+        # Handle legacy members without ha_user_id
+        data.setdefault("ha_user_id", None)
         return cls(**data)
 
 
@@ -253,4 +256,11 @@ class FamDoData:
         for reward in self.rewards:
             if reward.id == reward_id:
                 return reward
+        return None
+
+    def get_reward_claim_by_id(self, claim_id: str) -> Optional[RewardClaim]:
+        """Get a reward claim by ID."""
+        for claim in self.reward_claims:
+            if claim.id == claim_id:
+                return claim
         return None

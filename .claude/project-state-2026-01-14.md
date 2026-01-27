@@ -9,7 +9,7 @@ FamDo is a HACS-compatible Home Assistant custom integration for family task man
 - Parent approval workflow
 
 ## Current Version
-**v1.4.5** (released today)
+**v1.5.0** (released January 17, 2026)
 
 ## Key Files Structure
 ```
@@ -34,7 +34,9 @@ custom_components/famdo/
 3. `famdo-points-card` - Points leaderboard
 4. `famdo-rewards-card` - View and claim rewards
 5. `famdo-today-card` - Today's schedule with action buttons
-6. `famdo-activity-log` - Parent admin view (NEW in v1.4.5)
+6. `famdo-activity-log` - Parent admin view
+7. `famdo-member-account` - Transaction history for a member (NEW in v1.5.0)
+8. `famdo-pending-rewards` - Parent view to fulfill pending rewards (NEW in v1.5.0)
 
 ## Recent Development History (v1.4.x)
 
@@ -58,10 +60,17 @@ custom_components/famdo/
 - Fixed retry button CSS for rejected status in kiosk cards
 - Always_on chores auto-assign new instances to same person who completed previous
 
-### v1.4.5 (Current)
+### v1.4.5
 - Today card filters by unassigned OR assigned to selected user
 - Today card has claim/complete/retry action buttons
 - New `famdo-activity-log` card for parent admin view
+
+### v1.5.0 (Current)
+- New `famdo-member-account` card showing transaction history (points earned/spent)
+- New `famdo-pending-rewards` card for parents to fulfill reward claims
+- Added `famdo/fulfill_reward_claim` websocket endpoint
+- RewardClaim status now properly transitions to "fulfilled" when delivered
+- Added EVENT_REWARD_FULFILLED event
 
 ## Key Code Patterns
 
@@ -87,6 +96,7 @@ Key endpoints in `websocket_api.py`:
 - `famdo/claim_chore`, `famdo/complete_chore`
 - `famdo/approve_chore`, `famdo/reject_chore`
 - `famdo/retry_chore`
+- `famdo/claim_reward`, `famdo/fulfill_reward_claim`
 - Various add/update/delete endpoints for members, chores, rewards, todos, events
 
 ## Architecture Notes

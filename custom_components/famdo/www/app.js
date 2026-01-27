@@ -168,6 +168,43 @@ class FamDoAdminApp {
         return this.messageId++;
     }
 
+    async getApproverId() {
+        // Try to get current HA user ID
+        let haUserId = null;
+        try {
+            const userInfo = await this.sendCommand('auth/current_user', {});
+            if (userInfo && userInfo.id) {
+                haUserId = userInfo.id;
+            }
+        } catch (e) {
+            console.log('Could not fetch current user:', e);
+        }
+
+        // Try to find a linked member
+        if (haUserId && this.data?.members) {
+            const linkedMember = this.data.members.find(m => m.ha_user_id === haUserId && m.role === 'parent');
+            if (linkedMember) {
+                return linkedMember.id;
+            }
+        }
+
+        // Fall back to first parent
+        if (this.data?.members) {
+            const firstParent = this.data.members.find(m => m.role === 'parent');
+            if (firstParent) {
+                return firstParent.id;
+            }
+        }
+
+        // Last resort: use ha_user: prefix if we have HA user ID
+        if (haUserId) {
+            return `ha_user:${haUserId}`;
+        }
+
+        // If all else fails, throw an error
+        throw new Error('No approver available. Please ensure a parent member exists.');
+    }
+
     async loadData() {
         try {
             this.data = await this.sendCommand('famdo/get_data');
@@ -243,6 +280,9 @@ class FamDoAdminApp {
                 break;
             case 'rewards':
                 this.renderRewardsTab();
+                break;
+            case 'data':
+                this.renderDataTab();
                 break;
             case 'settings':
                 this.renderCalendarSources();
@@ -488,6 +528,7 @@ class FamDoAdminApp {
                     <span class="mdi mdi-plus"></span> Add Reward
                 </button>`
             },
+            data: { title: 'Data Management', subtitle: 'Manage records, bulk operations, and data cleanup', actions: '' },
             settings: { title: 'Settings', subtitle: 'Configure your FamDo integration', actions: '' }
         };
 
@@ -737,8 +778,11 @@ class FamDoAdminApp {
                     <td class="text-right">${completedCount}</td>
                     <td class="text-right">
                         <div class="row-actions">
-                            <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); app.showEditMemberModal('${member.id}')">
+                            <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); app.showEditMemberModal('${member.id}')" title="Edit">
                                 <span class="mdi mdi-pencil"></span>
+                            </button>
+                            <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); app.deleteMember('${member.id}', '${member.name}')" title="Delete">
+                                <span class="mdi mdi-delete"></span>
                             </button>
                         </div>
                     </td>
@@ -1102,10 +1146,11 @@ class FamDoAdminApp {
         if (choreIds.length === 0) return;
 
         try {
+            const approverId = await this.getApproverId();
             for (const choreId of choreIds) {
                 await this.sendCommand('famdo/approve_chore', {
                     chore_id: choreId,
-                    approver_id: null
+                    approver_id: approverId
                 });
             }
             this.showToast(`Approved ${choreIds.length} chores`, 'success');
@@ -1120,10 +1165,11 @@ class FamDoAdminApp {
         if (pending.length === 0) return;
 
         try {
+            const approverId = await this.getApproverId();
             for (const chore of pending) {
                 await this.sendCommand('famdo/approve_chore', {
                     chore_id: chore.id,
-                    approver_id: null
+                    approver_id: approverId
                 });
             }
             this.showToast(`Approved ${pending.length} chores`, 'success');
@@ -1406,9 +1452,10 @@ class FamDoAdminApp {
     async approveChore(choreId) {
         try {
             const chore = this.data.chores.find(c => c.id === choreId);
+            const approverId = await this.getApproverId();
             await this.sendCommand('famdo/approve_chore', {
                 chore_id: choreId,
-                approver_id: null
+                approver_id: approverId
             });
             this.showPointsAnimation(chore?.points || 0);
             this.showToast(`Approved! ${chore?.points || 0} points awarded`, 'success');
@@ -1419,9 +1466,10 @@ class FamDoAdminApp {
 
     async rejectChore(choreId) {
         try {
+            const approverId = await this.getApproverId();
             await this.sendCommand('famdo/reject_chore', {
                 chore_id: choreId,
-                approver_id: null
+                approver_id: approverId
             });
             this.showToast('Chore rejected', 'info');
         } catch (error) {
@@ -1564,12 +1612,50 @@ class FamDoAdminApp {
         });
     }
 
-    showEditMemberModal(memberId) {
+    async deleteMember(memberId, memberName) {
+        if (!confirm(`Are you sure you want to delete "${memberName}"? This cannot be undone.`)) {
+            return;
+        }
+
+        try {
+            await this.sendCommand('famdo/remove_member', { member_id: memberId });
+            this.showToast(`Member "${memberName}" deleted`, 'success');
+        } catch (error) {
+            this.showToast(`Failed to delete: ${error.message}`, 'error');
+        }
+    }
+
+    async showEditMemberModal(memberId) {
         const member = this.data.members.find(m => m.id === memberId);
         if (!member) return;
 
         const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F'];
         const icons = ['mdi-account', 'mdi-account-child', 'mdi-face-man', 'mdi-face-woman', 'mdi-dog', 'mdi-cat', 'mdi-robot', 'mdi-alien'];
+
+        // Get current HA user info - try multiple sources
+        let currentHaUserId = '';
+        let currentHaUserName = 'Unknown';
+
+        // Try to get from parent hass object (when loaded as HA panel)
+        if (window.parent?.hassConnection?.options?.auth?.data?.user) {
+            const user = window.parent.hassConnection.options.auth.data.user;
+            currentHaUserId = user.id || '';
+            currentHaUserName = user.name || 'Unknown';
+        }
+
+        // Try to fetch current user from HA API if not available
+        if (!currentHaUserId) {
+            try {
+                const userInfo = await this.sendCommand('auth/current_user', {});
+                if (userInfo) {
+                    currentHaUserId = userInfo.id || '';
+                    currentHaUserName = userInfo.name || 'Unknown';
+                }
+            } catch (e) {
+                console.log('Could not fetch current user:', e);
+            }
+        }
+        const isLinked = member.ha_user_id === currentHaUserId;
 
         const content = `
             <form id="edit-member-form">
@@ -1583,6 +1669,44 @@ class FamDoAdminApp {
                         <option value="child" ${member.role === 'child' ? 'selected' : ''}>Child</option>
                         <option value="parent" ${member.role === 'parent' ? 'selected' : ''}>Parent</option>
                     </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Home Assistant User</label>
+                    <div class="ha-user-link" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px;">
+                        ${member.ha_user_id ? `
+                            <span class="badge badge-success" style="padding: 6px 12px;">
+                                <span class="mdi mdi-link"></span>
+                                Linked: ${member.ha_user_id === currentHaUserId ? currentHaUserName : member.ha_user_id}
+                            </span>
+                            <button type="button" class="btn btn-sm btn-secondary" id="unlink-ha-user">
+                                <span class="mdi mdi-link-off"></span> Unlink
+                            </button>
+                        ` : `
+                            <span class="badge badge-secondary" style="padding: 6px 12px;">
+                                <span class="mdi mdi-link-off"></span> Not linked
+                            </span>
+                        `}
+                        ${!isLinked && currentHaUserId ? `
+                            <button type="button" class="btn btn-sm btn-primary" id="link-ha-user">
+                                <span class="mdi mdi-link"></span> Link to ${currentHaUserName}
+                            </button>
+                        ` : ''}
+                    </div>
+                    ${!currentHaUserId ? `
+                        <div style="margin-bottom: 8px;">
+                            <input type="text" class="form-input" id="ha-user-id-manual"
+                                   placeholder="Enter HA User ID manually"
+                                   value="${member.ha_user_id || ''}"
+                                   style="font-family: monospace; font-size: 0.9em;">
+                            <small style="color: var(--text-muted); display: block; margin-top: 4px;">
+                                Find your User ID in HA: Settings → People → [Your User] → ID shown in URL
+                            </small>
+                        </div>
+                    ` : ''}
+                    <input type="hidden" name="ha_user_id" id="ha-user-id-input" value="${member.ha_user_id || ''}">
+                    <small style="color: var(--text-muted); display: block; margin-top: 4px;">
+                        Links this member to a Home Assistant user for automatic identification when approving chores.
+                    </small>
                 </div>
                 <div class="form-group">
                     <label class="form-label">Color</label>
@@ -1615,11 +1739,53 @@ class FamDoAdminApp {
         this.setupColorPicker();
         this.setupIconPicker();
 
+        // Setup HA user link/unlink buttons
+        const linkBtn = document.getElementById('link-ha-user');
+        const unlinkBtn = document.getElementById('unlink-ha-user');
+        const haUserInput = document.getElementById('ha-user-id-input');
+        const manualInput = document.getElementById('ha-user-id-manual');
+
+        // Sync manual input to hidden field
+        if (manualInput) {
+            manualInput.addEventListener('input', () => {
+                haUserInput.value = manualInput.value.trim();
+            });
+        }
+
+        if (linkBtn) {
+            linkBtn.addEventListener('click', () => {
+                haUserInput.value = currentHaUserId;
+                // Update UI to show linked state
+                linkBtn.parentElement.innerHTML = `
+                    <span class="badge badge-success" style="padding: 6px 12px;">
+                        <span class="mdi mdi-link"></span>
+                        Linked: ${currentHaUserName}
+                    </span>
+                    <button type="button" class="btn btn-sm btn-secondary" id="unlink-ha-user-new">
+                        <span class="mdi mdi-link-off"></span> Unlink
+                    </button>
+                `;
+                document.getElementById('unlink-ha-user-new')?.addEventListener('click', () => {
+                    haUserInput.value = '';
+                    this.showEditMemberModal(memberId); // Refresh modal
+                });
+            });
+        }
+
+        if (unlinkBtn) {
+            unlinkBtn.addEventListener('click', () => {
+                haUserInput.value = '';
+                this.showEditMemberModal(memberId); // Refresh modal
+            });
+        }
+
         document.getElementById('edit-member-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const formData = new FormData(e.target);
             const color = document.querySelector('.color-picker .color-option.selected')?.dataset.color || member.color;
             const avatar = document.querySelector('.icon-picker .icon-option.selected')?.dataset.icon || member.avatar;
+            // Get ha_user_id from hidden input (which may have been set by manual input or link button)
+            const haUserId = document.getElementById('ha-user-id-input')?.value?.trim() || null;
 
             try {
                 await this.sendCommand('famdo/update_member', {
@@ -1627,7 +1793,8 @@ class FamDoAdminApp {
                     name: formData.get('name'),
                     role: formData.get('role'),
                     color: color,
-                    avatar: avatar
+                    avatar: avatar,
+                    ha_user_id: haUserId || null
                 });
                 this.closeModal();
                 this.showToast('Member updated!', 'success');
@@ -2098,6 +2265,333 @@ class FamDoAdminApp {
         document.body.appendChild(elem);
 
         setTimeout(() => elem.remove(), 1500);
+    }
+
+    // ==================== Data Management ====================
+
+    renderDataTab() {
+        this.renderAllClaimsTable();
+        this.updateBulkOperationCounts();
+    }
+
+    updateBulkOperationCounts() {
+        const chores = this.data?.chores || [];
+        const rewards = this.data?.rewards || [];
+        const claims = this.data?.reward_claims || [];
+        const todos = this.data?.todos || [];
+        const events = this.data?.events || [];
+        const members = this.data?.members || [];
+
+        const choreCount = document.getElementById('chore-count');
+        const rewardCount = document.getElementById('reward-count');
+        const claimCount = document.getElementById('claim-count');
+        const todoCount = document.getElementById('todo-count');
+        const eventCount = document.getElementById('event-count');
+        const memberCountData = document.getElementById('member-count-data');
+
+        if (choreCount) choreCount.textContent = `${chores.length} chores`;
+        if (rewardCount) rewardCount.textContent = `${rewards.length} rewards`;
+        if (claimCount) claimCount.textContent = `${claims.length} claims`;
+        if (todoCount) todoCount.textContent = `${todos.length} todos`;
+        if (eventCount) eventCount.textContent = `${events.length} events`;
+        if (memberCountData) memberCountData.textContent = `${members.length} members`;
+    }
+
+    renderAllClaimsTable() {
+        const tbody = document.getElementById('all-claims-tbody');
+        if (!tbody) return;
+
+        const claims = this.data?.reward_claims || [];
+
+        if (claims.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="7" class="empty-state">
+                        <span class="mdi mdi-receipt-text-outline"></span>
+                        <p>No reward claims</p>
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+
+        tbody.innerHTML = claims.map(claim => {
+            const member = this.data.members.find(m => m.id === claim.member_id);
+            const reward = this.data.rewards.find(r => r.id === claim.reward_id);
+            const statusClass = claim.status === 'fulfilled' ? 'completed' : 'pending';
+
+            return `
+                <tr>
+                    <td>
+                        <div class="member-cell">
+                            <span class="member-avatar" style="background: ${member?.color || '#ccc'}">
+                                <span class="mdi ${member?.avatar || 'mdi-account'}"></span>
+                            </span>
+                            ${member?.name || 'Unknown'}
+                        </div>
+                    </td>
+                    <td>
+                        <span class="mdi ${reward?.icon || 'mdi-gift'}"></span>
+                        ${reward?.name || 'Unknown'}
+                    </td>
+                    <td class="text-right">${claim.points_spent}</td>
+                    <td><span class="status-badge ${statusClass}">${claim.status}</span></td>
+                    <td>${this.formatDateTime(claim.claimed_at)}</td>
+                    <td>${claim.fulfilled_at ? this.formatDateTime(claim.fulfilled_at) : '-'}</td>
+                    <td class="text-right">
+                        <button class="btn btn-sm" onclick="app.showEditClaimModal('${claim.id}')">
+                            <span class="mdi mdi-pencil"></span>
+                        </button>
+                        <button class="btn btn-sm btn-danger" onclick="app.confirmDeleteClaim('${claim.id}')">
+                            <span class="mdi mdi-delete"></span>
+                        </button>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    showEditClaimModal(claimId) {
+        const claim = this.data.reward_claims.find(c => c.id === claimId);
+        if (!claim) return;
+
+        const reward = this.data.rewards.find(r => r.id === claim.reward_id);
+        const member = this.data.members.find(m => m.id === claim.member_id);
+
+        this.showModal('Edit Reward Claim', `
+            <form id="edit-claim-form">
+                <div class="form-group">
+                    <label class="form-label">Member</label>
+                    <input type="text" class="form-input" value="${member?.name || 'Unknown'}" disabled>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Reward</label>
+                    <input type="text" class="form-input" value="${reward?.name || 'Unknown'}" disabled>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Points Spent</label>
+                    <input type="number" class="form-input" name="points_spent" value="${claim.points_spent}" min="0">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Status</label>
+                    <select class="form-input" name="status">
+                        <option value="pending" ${claim.status === 'pending' ? 'selected' : ''}>Pending</option>
+                        <option value="fulfilled" ${claim.status === 'fulfilled' ? 'selected' : ''}>Fulfilled</option>
+                    </select>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn" onclick="app.closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </div>
+            </form>
+        `);
+
+        document.getElementById('edit-claim-form').onsubmit = async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            try {
+                await this.sendCommand('famdo/update_reward_claim', {
+                    claim_id: claimId,
+                    points_spent: parseInt(formData.get('points_spent')),
+                    status: formData.get('status')
+                });
+                this.closeModal();
+                this.showToast('Claim updated', 'success');
+            } catch (error) {
+                this.showToast(error.message, 'error');
+            }
+        };
+    }
+
+    async confirmDeleteClaim(claimId) {
+        if (confirm('Are you sure you want to delete this reward claim?')) {
+            try {
+                await this.sendCommand('famdo/delete_reward_claim', { claim_id: claimId });
+                this.showToast('Claim deleted', 'success');
+            } catch (error) {
+                this.showToast(error.message, 'error');
+            }
+        }
+    }
+
+    async confirmDeleteAllChores() {
+        const keepTemplates = document.getElementById('keep-templates-check')?.checked || false;
+        const count = this.data?.chores?.length || 0;
+
+        if (count === 0) {
+            this.showToast('No chores to delete', 'info');
+            return;
+        }
+
+        if (confirm(`Are you sure you want to delete all ${count} chores?${keepTemplates ? ' (Templates will be kept)' : ''}`)) {
+            try {
+                const result = await this.sendCommand('famdo/delete_all_chores', { keep_templates: keepTemplates });
+                this.showToast(`Deleted ${result.count} chores`, 'success');
+            } catch (error) {
+                this.showToast(error.message, 'error');
+            }
+        }
+    }
+
+    async confirmDeleteAllRewards() {
+        const count = this.data?.rewards?.length || 0;
+
+        if (count === 0) {
+            this.showToast('No rewards to delete', 'info');
+            return;
+        }
+
+        if (confirm(`Are you sure you want to delete all ${count} rewards?`)) {
+            try {
+                const result = await this.sendCommand('famdo/delete_all_rewards');
+                this.showToast(`Deleted ${result.count} rewards`, 'success');
+            } catch (error) {
+                this.showToast(error.message, 'error');
+            }
+        }
+    }
+
+    async confirmDeleteAllRewardClaims() {
+        const count = this.data?.reward_claims?.length || 0;
+
+        if (count === 0) {
+            this.showToast('No reward claims to delete', 'info');
+            return;
+        }
+
+        if (confirm(`Are you sure you want to delete all ${count} reward claims?`)) {
+            try {
+                const result = await this.sendCommand('famdo/delete_all_reward_claims');
+                this.showToast(`Deleted ${result.count} reward claims`, 'success');
+            } catch (error) {
+                this.showToast(error.message, 'error');
+            }
+        }
+    }
+
+    async confirmDeleteAllTodos() {
+        const count = this.data?.todos?.length || 0;
+
+        if (count === 0) {
+            this.showToast('No todos to delete', 'info');
+            return;
+        }
+
+        if (confirm(`Are you sure you want to delete all ${count} todos?`)) {
+            try {
+                const result = await this.sendCommand('famdo/delete_all_todos');
+                this.showToast(`Deleted ${result.count} todos`, 'success');
+            } catch (error) {
+                this.showToast(error.message, 'error');
+            }
+        }
+    }
+
+    async confirmDeleteAllEvents() {
+        const count = this.data?.events?.length || 0;
+
+        if (count === 0) {
+            this.showToast('No events to delete', 'info');
+            return;
+        }
+
+        if (confirm(`Are you sure you want to delete all ${count} events?`)) {
+            try {
+                const result = await this.sendCommand('famdo/delete_all_events');
+                this.showToast(`Deleted ${result.count} events`, 'success');
+            } catch (error) {
+                this.showToast(error.message, 'error');
+            }
+        }
+    }
+
+    async confirmDeleteAllMembers() {
+        const count = this.data?.members?.length || 0;
+
+        if (count === 0) {
+            this.showToast('No members to delete', 'info');
+            return;
+        }
+
+        if (confirm(`Are you sure you want to delete all ${count} family members? This cannot be undone!`)) {
+            try {
+                const result = await this.sendCommand('famdo/delete_all_members');
+                this.showToast(`Deleted ${result.count} members`, 'success');
+            } catch (error) {
+                this.showToast(error.message, 'error');
+            }
+        }
+    }
+
+    showClearAllDataModal() {
+        this.showModal('Clear All Data', `
+            <div class="reset-confirmation">
+                <h4><span class="mdi mdi-alert"></span> Warning</h4>
+                <p>This will permanently delete ALL FamDo data including:</p>
+                <ul style="margin: 8px 0 0 20px; font-size: 0.9rem;">
+                    <li>${this.data?.chores?.length || 0} chores</li>
+                    <li>${this.data?.rewards?.length || 0} rewards</li>
+                    <li>${this.data?.reward_claims?.length || 0} reward claims</li>
+                    <li>${this.data?.todos?.length || 0} todos</li>
+                    <li>${this.data?.events?.length || 0} events</li>
+                </ul>
+            </div>
+            <form id="clear-all-form">
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" name="keep_members" id="keep-members-check">
+                        <span>Keep family members (reset points to 0)</span>
+                    </label>
+                </div>
+                <div class="reset-input-group">
+                    <label>Type <strong>RESET</strong> to confirm:</label>
+                    <input type="text" class="form-input" name="confirmation" id="reset-confirmation" placeholder="RESET" autocomplete="off">
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn" onclick="app.closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-danger" id="confirm-reset-btn" disabled>
+                        <span class="mdi mdi-delete-forever"></span> Clear All Data
+                    </button>
+                </div>
+            </form>
+        `);
+
+        // Enable button only when "RESET" is typed
+        const confirmInput = document.getElementById('reset-confirmation');
+        const confirmBtn = document.getElementById('confirm-reset-btn');
+
+        confirmInput.addEventListener('input', () => {
+            confirmBtn.disabled = confirmInput.value.toUpperCase() !== 'RESET';
+        });
+
+        document.getElementById('clear-all-form').onsubmit = async (e) => {
+            e.preventDefault();
+            if (confirmInput.value.toUpperCase() !== 'RESET') {
+                this.showToast('Please type RESET to confirm', 'error');
+                return;
+            }
+
+            const keepMembers = document.getElementById('keep-members-check').checked;
+
+            try {
+                confirmBtn.disabled = true;
+                confirmBtn.innerHTML = '<span class="mdi mdi-loading mdi-spin"></span> Clearing...';
+
+                const result = await this.sendCommand('famdo/clear_all_data', { keep_members: keepMembers });
+
+                this.closeModal();
+                this.showToast('All data has been cleared', 'success');
+
+                // Force a full page reload to refresh everything
+                setTimeout(() => {
+                    window.location.reload();
+                }, 1000);
+            } catch (error) {
+                confirmBtn.disabled = false;
+                confirmBtn.innerHTML = '<span class="mdi mdi-delete-forever"></span> Clear All Data';
+                this.showToast(error.message, 'error');
+            }
+        };
     }
 }
 

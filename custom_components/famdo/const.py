@@ -2,7 +2,7 @@
 from typing import Final
 
 DOMAIN: Final = "famdo"
-VERSION: Final = "1.4.5"
+VERSION: Final = "1.5.0"
 
 # Configuration keys
 CONF_FAMILY_NAME: Final = "family_name"
@@ -14,6 +14,7 @@ STORAGE_VERSION: Final = 1
 # Events
 EVENT_CHORE_COMPLETED: Final = "famdo_chore_completed"
 EVENT_REWARD_CLAIMED: Final = "famdo_reward_claimed"
+EVENT_REWARD_FULFILLED: Final = "famdo_reward_fulfilled"
 EVENT_POINTS_UPDATED: Final = "famdo_points_updated"
 
 # Services

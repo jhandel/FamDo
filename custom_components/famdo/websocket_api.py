@@ -34,6 +34,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_add_reward)
     websocket_api.async_register_command(hass, websocket_update_reward)
     websocket_api.async_register_command(hass, websocket_claim_reward)
+    websocket_api.async_register_command(hass, websocket_fulfill_reward_claim)
     websocket_api.async_register_command(hass, websocket_delete_reward)
     websocket_api.async_register_command(hass, websocket_add_todo)
     websocket_api.async_register_command(hass, websocket_update_todo)
@@ -46,6 +47,16 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_subscribe)
     websocket_api.async_register_command(hass, websocket_get_ha_calendars)
     websocket_api.async_register_command(hass, websocket_get_ha_calendar_events)
+    # Data management commands
+    websocket_api.async_register_command(hass, websocket_update_reward_claim)
+    websocket_api.async_register_command(hass, websocket_delete_reward_claim)
+    websocket_api.async_register_command(hass, websocket_delete_all_chores)
+    websocket_api.async_register_command(hass, websocket_delete_all_rewards)
+    websocket_api.async_register_command(hass, websocket_delete_all_reward_claims)
+    websocket_api.async_register_command(hass, websocket_delete_all_todos)
+    websocket_api.async_register_command(hass, websocket_delete_all_events)
+    websocket_api.async_register_command(hass, websocket_delete_all_members)
+    websocket_api.async_register_command(hass, websocket_clear_all_data)
 
 
 def _get_coordinator(hass: HomeAssistant) -> FamDoCoordinator:
@@ -139,6 +150,7 @@ async def websocket_add_member(
         vol.Optional("color"): str,
         vol.Optional("avatar"): str,
         vol.Optional("points"): int,
+        vol.Optional("ha_user_id"): vol.Any(str, None),
     }
 )
 @websocket_api.async_response
@@ -154,7 +166,7 @@ async def websocket_update_member(
 
     # Extract only the update fields
     update_data = {}
-    for key in ["name", "role", "color", "avatar", "points"]:
+    for key in ["name", "role", "color", "avatar", "points", "ha_user_id"]:
         if key in msg:
             update_data[key] = msg[key]
 
@@ -319,7 +331,35 @@ async def websocket_approve_chore(
 ) -> None:
     """Approve a chore."""
     coordinator = _get_coordinator(hass)
-    chore = await coordinator.async_approve_chore(msg["chore_id"], msg["approver_id"])
+    approver_id = msg["approver_id"]
+
+    # Handle ha_user: prefix - verify HA user is admin
+    if approver_id.startswith("ha_user:"):
+        ha_user_id = approver_id[8:]  # Strip "ha_user:" prefix
+        # Check if the connection user matches and is admin
+        if connection.user and connection.user.id == ha_user_id:
+            if not connection.user.is_admin:
+                connection.send_error(msg["id"], "unauthorized", "Only admin users can approve chores")
+                return
+            # Try to find a parent member linked to this HA user
+            for member in coordinator.famdo_data.members:
+                if member.ha_user_id == ha_user_id and member.role == "parent":
+                    approver_id = member.id
+                    break
+            else:
+                # No linked member, find any parent for approval
+                for member in coordinator.famdo_data.members:
+                    if member.role == "parent":
+                        approver_id = member.id
+                        break
+                else:
+                    connection.send_error(msg["id"], "failed", "No parent member found. Please create a parent member first.")
+                    return
+        else:
+            connection.send_error(msg["id"], "unauthorized", "User mismatch")
+            return
+
+    chore = await coordinator.async_approve_chore(msg["chore_id"], approver_id)
     if chore:
         connection.send_result(msg["id"], chore.to_dict())
     else:
@@ -341,7 +381,34 @@ async def websocket_reject_chore(
 ) -> None:
     """Reject a chore."""
     coordinator = _get_coordinator(hass)
-    chore = await coordinator.async_reject_chore(msg["chore_id"], msg["approver_id"])
+    approver_id = msg["approver_id"]
+
+    # Handle ha_user: prefix - verify HA user is admin
+    if approver_id.startswith("ha_user:"):
+        ha_user_id = approver_id[8:]  # Strip "ha_user:" prefix
+        if connection.user and connection.user.id == ha_user_id:
+            if not connection.user.is_admin:
+                connection.send_error(msg["id"], "unauthorized", "Only admin users can reject chores")
+                return
+            # Try to find a parent member linked to this HA user
+            for member in coordinator.famdo_data.members:
+                if member.ha_user_id == ha_user_id and member.role == "parent":
+                    approver_id = member.id
+                    break
+            else:
+                # No linked member, find any parent
+                for member in coordinator.famdo_data.members:
+                    if member.role == "parent":
+                        approver_id = member.id
+                        break
+                else:
+                    connection.send_error(msg["id"], "failed", "No parent member found. Please create a parent member first.")
+                    return
+        else:
+            connection.send_error(msg["id"], "unauthorized", "User mismatch")
+            return
+
+    chore = await coordinator.async_reject_chore(msg["chore_id"], approver_id)
     if chore:
         connection.send_result(msg["id"], chore.to_dict())
     else:
@@ -473,6 +540,55 @@ async def websocket_claim_reward(
         connection.send_result(msg["id"], claim.to_dict())
     else:
         connection.send_error(msg["id"], "failed", "Could not claim reward")
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "famdo/fulfill_reward_claim",
+        vol.Required("claim_id"): str,
+        vol.Required("fulfiller_id"): str,
+    }
+)
+@websocket_api.async_response
+async def websocket_fulfill_reward_claim(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Fulfill a reward claim (mark as delivered)."""
+    coordinator = _get_coordinator(hass)
+    fulfiller_id = msg["fulfiller_id"]
+
+    # Handle ha_user: prefix - verify HA user is admin
+    if fulfiller_id.startswith("ha_user:"):
+        ha_user_id = fulfiller_id[8:]  # Strip "ha_user:" prefix
+        if connection.user and connection.user.id == ha_user_id:
+            if not connection.user.is_admin:
+                connection.send_error(msg["id"], "unauthorized", "Only admin users can fulfill rewards")
+                return
+            # Try to find a parent member linked to this HA user
+            for member in coordinator.famdo_data.members:
+                if member.ha_user_id == ha_user_id and member.role == "parent":
+                    fulfiller_id = member.id
+                    break
+            else:
+                # No linked member, find any parent
+                for member in coordinator.famdo_data.members:
+                    if member.role == "parent":
+                        fulfiller_id = member.id
+                        break
+                else:
+                    connection.send_error(msg["id"], "failed", "No parent member found. Please create a parent member first.")
+                    return
+        else:
+            connection.send_error(msg["id"], "unauthorized", "User mismatch")
+            return
+
+    claim = await coordinator.async_fulfill_reward_claim(msg["claim_id"], fulfiller_id)
+    if claim:
+        connection.send_result(msg["id"], claim.to_dict())
+    else:
+        connection.send_error(msg["id"], "failed", "Could not fulfill reward claim")
 
 
 @websocket_api.websocket_command(
@@ -805,3 +921,177 @@ async def websocket_get_ha_calendar_events(
     except Exception as e:
         _LOGGER.error("Error fetching calendar events: %s", e)
         connection.send_result(msg["id"], {"events": []})
+
+
+# ==================== Data Management ====================
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "famdo/update_reward_claim",
+        vol.Required("claim_id"): str,
+        vol.Optional("status"): str,
+        vol.Optional("points_spent"): int,
+        vol.Optional("fulfilled_at"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+async def websocket_update_reward_claim(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Update a reward claim."""
+    coordinator = _get_coordinator(hass)
+    claim_id = msg.pop("claim_id")
+    msg.pop("type")
+    msg_id = msg.pop("id")
+
+    claim = await coordinator.async_update_reward_claim(claim_id, **msg)
+    if claim:
+        connection.send_result(msg_id, claim.to_dict())
+    else:
+        connection.send_error(msg_id, "not_found", "Reward claim not found")
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "famdo/delete_reward_claim",
+        vol.Required("claim_id"): str,
+    }
+)
+@websocket_api.async_response
+async def websocket_delete_reward_claim(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete a reward claim."""
+    coordinator = _get_coordinator(hass)
+    success = await coordinator.async_delete_reward_claim(msg["claim_id"])
+    connection.send_result(msg["id"], {"success": success})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "famdo/delete_all_chores",
+        vol.Optional("keep_templates", default=False): bool,
+    }
+)
+@websocket_api.async_response
+async def websocket_delete_all_chores(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete all chores."""
+    coordinator = _get_coordinator(hass)
+    count = await coordinator.async_delete_all_chores(
+        keep_templates=msg.get("keep_templates", False)
+    )
+    connection.send_result(msg["id"], {"success": True, "count": count})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "famdo/delete_all_rewards",
+    }
+)
+@websocket_api.async_response
+async def websocket_delete_all_rewards(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete all rewards."""
+    coordinator = _get_coordinator(hass)
+    count = await coordinator.async_delete_all_rewards()
+    connection.send_result(msg["id"], {"success": True, "count": count})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "famdo/delete_all_reward_claims",
+    }
+)
+@websocket_api.async_response
+async def websocket_delete_all_reward_claims(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete all reward claims."""
+    coordinator = _get_coordinator(hass)
+    count = await coordinator.async_delete_all_reward_claims()
+    connection.send_result(msg["id"], {"success": True, "count": count})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "famdo/delete_all_todos",
+    }
+)
+@websocket_api.async_response
+async def websocket_delete_all_todos(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete all todos."""
+    coordinator = _get_coordinator(hass)
+    count = await coordinator.async_delete_all_todos()
+    connection.send_result(msg["id"], {"success": True, "count": count})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "famdo/delete_all_events",
+    }
+)
+@websocket_api.async_response
+async def websocket_delete_all_events(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete all calendar events."""
+    coordinator = _get_coordinator(hass)
+    count = await coordinator.async_delete_all_events()
+    connection.send_result(msg["id"], {"success": True, "count": count})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "famdo/delete_all_members",
+    }
+)
+@websocket_api.async_response
+async def websocket_delete_all_members(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Delete all family members."""
+    coordinator = _get_coordinator(hass)
+    count = await coordinator.async_delete_all_members()
+    connection.send_result(msg["id"], {"success": True, "count": count})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "famdo/clear_all_data",
+        vol.Optional("keep_members", default=False): bool,
+    }
+)
+@websocket_api.async_response
+async def websocket_clear_all_data(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Clear all FamDo data - reset the entire installation."""
+    coordinator = _get_coordinator(hass)
+    counts = await coordinator.async_clear_all_data(
+        keep_members=msg.get("keep_members", False)
+    )
+    connection.send_result(msg["id"], {"success": True, "counts": counts})

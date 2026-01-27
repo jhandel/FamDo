@@ -36,6 +36,10 @@
                     <span class="nav-label">Rewards</span>
                     <span class="nav-badge pending" id="rewards-pending">0</span>
                 </button>
+                <button class="nav-item" data-tab="data">
+                    <span class="mdi mdi-database-cog"></span>
+                    <span class="nav-label">Data Management</span>
+                </button>
                 <button class="nav-item" data-tab="settings">
                     <span class="mdi mdi-cog"></span>
                     <span class="nav-label">Settings</span>
@@ -322,6 +326,144 @@
                                     <!-- Populated by JS -->
                                 </tbody>
                             </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Data Management Tab -->
+                <section class="tab-content" id="data-tab">
+                    <!-- Reward Claims Section -->
+                    <div class="dashboard-card">
+                        <div class="card-header">
+                            <h3><span class="mdi mdi-receipt"></span> Reward Claims</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="data-table-container">
+                                <table class="data-table" id="all-claims-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Member</th>
+                                            <th>Reward</th>
+                                            <th class="text-right">Points</th>
+                                            <th>Status</th>
+                                            <th>Claimed At</th>
+                                            <th>Fulfilled At</th>
+                                            <th class="text-right">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="all-claims-tbody">
+                                        <!-- Populated by JS -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Bulk Operations Section -->
+                    <div class="dashboard-card">
+                        <div class="card-header">
+                            <h3><span class="mdi mdi-delete-sweep"></span> Bulk Operations</h3>
+                        </div>
+                        <div class="card-body">
+                            <p class="form-help" style="margin-bottom: 16px;">Delete all records of a specific type. These operations cannot be undone.</p>
+                            <div class="bulk-operations-grid">
+                                <div class="bulk-op-card">
+                                    <div class="bulk-op-info">
+                                        <span class="mdi mdi-broom bulk-op-icon"></span>
+                                        <div>
+                                            <h4>Chores</h4>
+                                            <p id="chore-count">0 chores</p>
+                                        </div>
+                                    </div>
+                                    <div class="bulk-op-actions">
+                                        <label class="checkbox-label" style="margin-bottom: 8px;">
+                                            <input type="checkbox" id="keep-templates-check">
+                                            <span>Keep templates</span>
+                                        </label>
+                                        <button class="btn btn-danger btn-sm" onclick="app.confirmDeleteAllChores()">
+                                            <span class="mdi mdi-delete"></span> Delete All
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="bulk-op-card">
+                                    <div class="bulk-op-info">
+                                        <span class="mdi mdi-gift bulk-op-icon"></span>
+                                        <div>
+                                            <h4>Rewards</h4>
+                                            <p id="reward-count">0 rewards</p>
+                                        </div>
+                                    </div>
+                                    <button class="btn btn-danger btn-sm" onclick="app.confirmDeleteAllRewards()">
+                                        <span class="mdi mdi-delete"></span> Delete All
+                                    </button>
+                                </div>
+                                <div class="bulk-op-card">
+                                    <div class="bulk-op-info">
+                                        <span class="mdi mdi-receipt bulk-op-icon"></span>
+                                        <div>
+                                            <h4>Reward Claims</h4>
+                                            <p id="claim-count">0 claims</p>
+                                        </div>
+                                    </div>
+                                    <button class="btn btn-danger btn-sm" onclick="app.confirmDeleteAllRewardClaims()">
+                                        <span class="mdi mdi-delete"></span> Delete All
+                                    </button>
+                                </div>
+                                <div class="bulk-op-card">
+                                    <div class="bulk-op-info">
+                                        <span class="mdi mdi-checkbox-marked-outline bulk-op-icon"></span>
+                                        <div>
+                                            <h4>Todos</h4>
+                                            <p id="todo-count">0 todos</p>
+                                        </div>
+                                    </div>
+                                    <button class="btn btn-danger btn-sm" onclick="app.confirmDeleteAllTodos()">
+                                        <span class="mdi mdi-delete"></span> Delete All
+                                    </button>
+                                </div>
+                                <div class="bulk-op-card">
+                                    <div class="bulk-op-info">
+                                        <span class="mdi mdi-calendar bulk-op-icon"></span>
+                                        <div>
+                                            <h4>Events</h4>
+                                            <p id="event-count">0 events</p>
+                                        </div>
+                                    </div>
+                                    <button class="btn btn-danger btn-sm" onclick="app.confirmDeleteAllEvents()">
+                                        <span class="mdi mdi-delete"></span> Delete All
+                                    </button>
+                                </div>
+                                <div class="bulk-op-card">
+                                    <div class="bulk-op-info">
+                                        <span class="mdi mdi-account-group bulk-op-icon"></span>
+                                        <div>
+                                            <h4>Members</h4>
+                                            <p id="member-count-data">0 members</p>
+                                        </div>
+                                    </div>
+                                    <button class="btn btn-danger btn-sm" onclick="app.confirmDeleteAllMembers()">
+                                        <span class="mdi mdi-delete"></span> Delete All
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Danger Zone -->
+                    <div class="dashboard-card danger-zone">
+                        <div class="card-header">
+                            <h3><span class="mdi mdi-alert"></span> Danger Zone</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="danger-zone-content">
+                                <div class="danger-zone-info">
+                                    <h4>Clear All Data</h4>
+                                    <p>This will permanently delete all FamDo data including chores, rewards, claims, todos, and events. This action cannot be undone.</p>
+                                </div>
+                                <button class="btn btn-danger" onclick="app.showClearAllDataModal()">
+                                    <span class="mdi mdi-delete-forever"></span> Clear All Data
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </section>
