@@ -875,6 +875,9 @@ class FamDoBaseCard extends HTMLElement {
     try {
       this._data = await this._hass.callWS({ type: 'famdo/get_data' });
 
+      // Also load HA calendar events for the configured calendars
+      await this._loadCalendarEvents();
+
       // Try to restore selected member from localStorage
       const savedMemberId = localStorage.getItem('famdo_kiosk_member');
       if (savedMemberId && this._data.members.find(m => m.id === savedMemberId)) {
@@ -888,14 +891,67 @@ class FamDoBaseCard extends HTMLElement {
     }
   }
 
+  async _loadCalendarEvents() {
+    if (!this._hass || !this._data?.settings?.selected_calendars?.length) {
+      return;
+    }
+
+    const selectedCalendars = this._data.settings.selected_calendars;
+    const calendarColors = this._data.settings.calendar_colors || {};
+    
+    // Get events for the current week
+    const today = new Date();
+    const weekStart = new Date(today);
+    weekStart.setDate(today.getDate() - today.getDay() + 1); // Monday
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 7); // Sunday end of day
+
+    // API expects ISO format datetime strings
+    const start = weekStart.toISOString();
+    const end = weekEnd.toISOString();
+
+    const allEvents = [];
+    
+    for (const entityId of selectedCalendars) {
+      try {
+        const result = await this._hass.callWS({
+          type: 'famdo/get_ha_calendar_events',
+          entity_id: entityId,
+          start: start,
+          end: end
+        });
+        
+        if (result?.events) {
+          const color = calendarColors[entityId] || '#64B5F6';
+          result.events.forEach(event => {
+            allEvents.push({
+              ...event,
+              title: event.summary,
+              calendar_entity_id: entityId,
+              color: color,
+              start_date: event.start?.split('T')[0] || event.start,
+              start_time: event.start?.includes('T') ? event.start.split('T')[1]?.substring(0, 5) : null
+            });
+          });
+        }
+      } catch (e) {
+        console.error(`FamDo: Failed to load events from ${entityId}`, e);
+      }
+    }
+
+    // Replace events with fresh data (don't keep appending)
+    this._data.events = allEvents;
+  }
+
   async _subscribeToUpdates() {
     if (!this._hass) return;
 
     try {
       this._hass.connection.subscribeMessage(
-        (msg) => {
+        async (msg) => {
           if (msg.data) {
             this._data = msg.data;
+            await this._loadCalendarEvents();
             this._render();
           }
         },
@@ -3549,20 +3605,36 @@ class FamDoWeeklyGrid extends FamDoBaseCard {
   }
 
   _getChoresForMemberAndDay(memberId, dateStr) {
+    const today = new Date().toISOString().split('T')[0];
+    const isToday = dateStr === today;
+    
     return (this._data.chores || [])
       .filter(c => !c.is_template)
-      .filter(c => c.due_date === dateStr)
-      .filter(c => c.assigned_to === memberId || c.claimed_by === memberId);
+      .filter(c => {
+        // For today: include chores with no due_date (always available) OR due today
+        if (isToday) {
+          return !c.due_date || c.due_date === dateStr;
+        }
+        // For other days: only show chores specifically due that day
+        return c.due_date === dateStr;
+      })
+      .filter(c => !c.assigned_to || c.assigned_to === memberId || c.claimed_by === memberId);
+  }
+
+  _getEventsForDay(dateStr) {
+    return (this._data.events || [])
+      .filter(e => e.start_date === dateStr);
   }
 
   _getCompletionStats(memberId, dateStr) {
     const chores = this._getChoresForMemberAndDay(memberId, dateStr);
+    const events = this._getEventsForDay(dateStr);
     const total = chores.length;
     const completed = chores.filter(c => c.status === 'completed').length;
     const pending = chores.filter(c => c.status === 'awaiting_approval').length;
     const inProgress = chores.filter(c => c.status === 'claimed').length;
 
-    return { total, completed, pending, inProgress, chores };
+    return { total, completed, pending, inProgress, chores, events };
   }
 
   _render() {
@@ -3758,6 +3830,10 @@ class FamDoWeeklyGrid extends FamDoBaseCard {
           opacity: 0.4;
         }
 
+        .checkmark.event {
+          color: var(--kiosk-blue-soft, #64B5F6);
+        }
+
         .cell-count {
           font-size: 0.7rem;
           color: var(--famdo-text-secondary);
@@ -3884,8 +3960,9 @@ class FamDoWeeklyGrid extends FamDoBaseCard {
 
   _renderCell(member, day) {
     const stats = this._getCompletionStats(member.id, day.date);
+    const hasContent = stats.total > 0 || stats.events.length > 0;
 
-    if (stats.total === 0) {
+    if (!hasContent) {
       return `
         <div class="grid-cell ${day.isToday ? 'today' : ''} no-chores">
           <span class="cell-empty">—</span>
@@ -3900,14 +3977,19 @@ class FamDoWeeklyGrid extends FamDoBaseCard {
       return '<span class="checkmark todo">○</span>';
     }).join('');
 
+    const eventMarkers = stats.events.map(e => 
+      `<span class="checkmark" style="color: ${e.color || 'var(--kiosk-blue-soft)'}">📅</span>`
+    ).join('');
+
     return `
       <div class="grid-cell ${day.isToday ? 'today' : ''}" data-member="${member.id}" data-date="${day.date}">
         <div class="cell-stats">
-          <div class="cell-checkmarks">${checkmarks}</div>
-          <span class="cell-count">${stats.completed}/${stats.total}</span>
+          <div class="cell-checkmarks">${checkmarks}${eventMarkers}</div>
+          ${stats.total > 0 ? `<span class="cell-count">${stats.completed}/${stats.total}</span>` : ''}
         </div>
         <div class="cell-tooltip">
-          ${stats.completed} completed, ${stats.pending} pending, ${stats.total - stats.completed - stats.pending - stats.inProgress} remaining
+          ${stats.total > 0 ? `${stats.completed} completed, ${stats.pending} pending, ${stats.total - stats.completed - stats.pending - stats.inProgress} remaining` : ''}
+          ${stats.events.length > 0 ? `${stats.total > 0 ? '<br>' : ''}${stats.events.length} event${stats.events.length > 1 ? 's' : ''}: ${stats.events.map(e => e.title).join(', ')}` : ''}
         </div>
       </div>
     `;

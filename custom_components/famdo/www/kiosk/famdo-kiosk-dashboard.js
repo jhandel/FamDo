@@ -90,6 +90,16 @@ class FamDoKioskDashboard extends HTMLElement {
     this._selectedMemberId = null;
     this._currentTime = new Date();
     this._timeInterval = null;
+    this._activeTab = 'chores'; // Default tab
+    this._selectedCalendarDate = this._getLocalDateStr(new Date()); // Default to today
+  }
+
+  // Helper to get YYYY-MM-DD in local timezone
+  _getLocalDateStr(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 
   set hass(hass) {
@@ -124,11 +134,26 @@ class FamDoKioskDashboard extends HTMLElement {
     }
   }
 
+  _switchTab(tabName) {
+    this._activeTab = tabName;
+    this._render();
+  }
+
   async _loadData() {
     if (!this._hass) return;
 
     try {
       this._data = await this._hass.callWS({ type: 'famdo/get_data' });
+      
+      // Also load HA calendar events for the configured calendars
+      await this._loadCalendarEvents();
+      
+      console.log('FamDo Dashboard: Data loaded', {
+        members: this._data?.members?.length || 0,
+        chores: this._data?.chores?.length || 0,
+        events: this._data?.events?.length || 0,
+        rewards: this._data?.rewards?.length || 0
+      });
 
       // Try to restore selected member
       const savedMemberId = localStorage.getItem('famdo_kiosk_member');
@@ -141,6 +166,7 @@ class FamDoKioskDashboard extends HTMLElement {
         const firstChild = this._data.members.find(m => m.role === 'child');
         this._selectedMemberId = firstChild?.id || this._data.members[0].id;
       }
+      console.log('FamDo Dashboard: Selected member', this._selectedMemberId);
 
       this._render();
       this._subscribeToUpdates();
@@ -149,14 +175,95 @@ class FamDoKioskDashboard extends HTMLElement {
     }
   }
 
+  async _loadCalendarEvents() {
+    if (!this._hass || !this._data?.settings?.selected_calendars?.length) {
+      console.log('FamDo Dashboard: No calendars configured');
+      return;
+    }
+
+    const selectedCalendars = this._data.settings.selected_calendars;
+    const calendarColors = this._data.settings.calendar_colors || {};
+    
+    // Get events for the current week
+    const today = new Date();
+    const weekStart = new Date(today);
+    weekStart.setDate(today.getDate() - (today.getDay() === 0 ? 6 : today.getDay() - 1)); // Monday
+    weekStart.setHours(0, 0, 0, 0); // Start of day local time
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 7);
+    weekEnd.setHours(23, 59, 59, 999); // End of day
+
+    // API expects ISO format datetime strings
+    const start = weekStart.toISOString();
+    const end = weekEnd.toISOString();
+
+    console.log('FamDo Dashboard: Fetching calendar events', { selectedCalendars, start, end });
+
+    const allEvents = [];
+    
+    for (const entityId of selectedCalendars) {
+      try {
+        const result = await this._hass.callWS({
+          type: 'famdo/get_ha_calendar_events',
+          entity_id: entityId,
+          start: start,
+          end: end
+        });
+        
+        if (result?.events) {
+          const color = calendarColors[entityId] || '#64B5F6';
+          result.events.forEach(event => {
+            // Parse event start time properly with local timezone
+            let startDate = null;
+            let startTime = null;
+            
+            if (event.start) {
+              if (event.start.includes('T')) {
+                // DateTime format - convert to local
+                const eventDate = new Date(event.start);
+                startDate = this._getLocalDateStr(eventDate);
+                startTime = eventDate.toLocaleTimeString('en-US', { 
+                  hour: '2-digit', 
+                  minute: '2-digit',
+                  hour12: false 
+                });
+              } else {
+                // Date only (all-day event)
+                startDate = event.start;
+                startTime = null;
+              }
+            }
+            
+            allEvents.push({
+              ...event,
+              title: event.summary,
+              calendar_entity_id: entityId,
+              color: color,
+              start_date: startDate,
+              start_time: startTime
+            });
+          });
+        }
+      } catch (e) {
+        console.error(`FamDo Dashboard: Failed to load events from ${entityId}`, e);
+      }
+    }
+
+    // Replace events with fresh data (don't keep appending)
+    this._data.events = allEvents;
+    console.log('FamDo Dashboard: Calendar events loaded', allEvents.length);
+  }
+
   async _subscribeToUpdates() {
     if (!this._hass) return;
 
     try {
       this._hass.connection.subscribeMessage(
-        (msg) => {
+        async (msg) => {
           if (msg.data) {
             this._data = msg.data;
+            // Reload calendar events when data updates
+            await this._loadCalendarEvents();
             this._render();
           }
         },
@@ -204,22 +311,24 @@ class FamDoKioskDashboard extends HTMLElement {
 
     const days = [];
     const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const todayStr = this._getLocalDateStr(today);
 
     for (let i = 0; i < 7; i++) {
       const d = new Date(monday);
       d.setDate(monday.getDate() + i);
+      const dateStr = this._getLocalDateStr(d);
       days.push({
         name: dayNames[i],
-        date: d.toISOString().split('T')[0],
+        date: dateStr,
         dayNum: d.getDate(),
-        isToday: d.toISOString().split('T')[0] === today.toISOString().split('T')[0]
+        isToday: dateStr === todayStr
       });
     }
     return days;
   }
 
   _getTodayChores(memberId) {
-    const today = new Date().toISOString().split('T')[0];
+    const today = this._getLocalDateStr(new Date());
     return (this._data?.chores || [])
       .filter(c => !c.is_template && c.status !== 'completed')
       .filter(c => !c.due_date || c.due_date === today || c.due_date < today)
@@ -227,10 +336,25 @@ class FamDoKioskDashboard extends HTMLElement {
   }
 
   _getChoresForDay(memberId, dateStr) {
+    const today = this._getLocalDateStr(new Date());
+    const isToday = dateStr === today;
+    
     return (this._data?.chores || [])
       .filter(c => !c.is_template)
-      .filter(c => c.due_date === dateStr)
-      .filter(c => c.assigned_to === memberId || c.claimed_by === memberId);
+      .filter(c => {
+        // For today: include chores with no due_date (always available) OR due today
+        if (isToday) {
+          return !c.due_date || c.due_date === dateStr;
+        }
+        // For other days: only show chores specifically due that day
+        return c.due_date === dateStr;
+      })
+      .filter(c => !c.assigned_to || c.assigned_to === memberId || c.claimed_by === memberId);
+  }
+
+  _getEventsForDay(dateStr) {
+    return (this._data?.events || [])
+      .filter(e => e.start_date === dateStr);
   }
 
   _getRewardProgress(memberId) {
@@ -277,6 +401,13 @@ class FamDoKioskDashboard extends HTMLElement {
     const weekDays = this._getWeekDays();
     const today = new Date();
 
+    console.log('FamDo Dashboard: Rendering', {
+      members: members.length,
+      selectedMember: selectedMember?.name,
+      todayChores: todayChores.length,
+      weekDays: weekDays.map(d => d.date)
+    });
+
     this.shadowRoot.innerHTML = `
       <style>${DASHBOARD_STYLES}
         .dashboard {
@@ -286,7 +417,7 @@ class FamDoKioskDashboard extends HTMLElement {
           color: var(--kiosk-text-dark);
           padding: 20px;
           display: grid;
-          grid-template-rows: auto 1fr;
+          grid-template-rows: auto auto 1fr;
           gap: 20px;
         }
 
@@ -341,12 +472,48 @@ class FamDoKioskDashboard extends HTMLElement {
           color: var(--kiosk-text-muted);
         }
 
-        /* Main Content */
+        /* Navigation Tabs */
+        .header-tabs {
+          display: flex;
+          gap: 8px;
+          margin-left: 32px;
+        }
+
+        .header-tab {
+          padding: 10px 20px;
+          border: none;
+          background: transparent;
+          border-radius: var(--kiosk-radius-sm);
+          font-size: 1rem;
+          font-weight: 500;
+          color: var(--kiosk-text-muted);
+          cursor: pointer;
+          transition: all 0.2s ease;
+          font-family: inherit;
+        }
+
+        .header-tab:hover {
+          background: rgba(0, 0, 0, 0.05);
+          color: var(--kiosk-text-dark);
+        }
+
+        .header-tab.active {
+          background: linear-gradient(135deg, var(--kiosk-coral), var(--kiosk-blue-soft));
+          color: white;
+          box-shadow: 0 2px 8px rgba(255, 138, 128, 0.3);
+        }
+
+        /* Bottom row: Users | Chores | Rewards (2/12, 5/12, 5/12) */
         .dashboard-content {
           display: grid;
-          grid-template-columns: 280px 1fr;
+          grid-template-columns: 2fr 5fr 5fr;
           gap: 20px;
           overflow: hidden;
+        }
+
+        /* Full width content for calendar tab */
+        .dashboard-content.full-width {
+          grid-template-columns: 1fr;
         }
 
         /* Left Sidebar - Members */
@@ -442,11 +609,10 @@ class FamDoKioskDashboard extends HTMLElement {
           font-weight: 600;
         }
 
-        /* Main Panels */
+        /* Main Panels - stacks chores and rewards vertically */
         .main-panels {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          grid-template-rows: auto 1fr;
+          display: flex;
+          flex-direction: column;
           gap: 20px;
           overflow: hidden;
         }
@@ -483,7 +649,8 @@ class FamDoKioskDashboard extends HTMLElement {
 
         /* Weekly Grid Panel */
         .weekly-panel {
-          grid-column: span 2;
+          flex: 1;
+          overflow-y: auto;
         }
 
         .week-grid {
@@ -543,6 +710,7 @@ class FamDoKioskDashboard extends HTMLElement {
         .status-dot.completed { background: var(--kiosk-green-check); }
         .status-dot.pending { background: var(--kiosk-star-gold); }
         .status-dot.todo { background: var(--kiosk-text-muted); opacity: 0.3; }
+        .status-dot.event { background: var(--kiosk-blue-soft); }
 
         /* Today's Chores Panel */
         .chores-list {
@@ -1011,18 +1179,240 @@ class FamDoKioskDashboard extends HTMLElement {
             padding: 8px 4px;
           }
         }
+
+        /* Calendar Tab Styles */
+        .calendar-view {
+          display: grid;
+          grid-template-columns: 1fr 350px;
+          gap: 20px;
+          height: 100%;
+        }
+
+        .calendar-main {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+
+        .calendar-agenda {
+          background: white;
+          border-radius: var(--kiosk-radius-lg);
+          padding: 20px;
+          box-shadow: var(--kiosk-shadow-soft);
+          overflow-y: auto;
+        }
+
+        .agenda-day {
+          margin-bottom: 20px;
+        }
+
+        .agenda-day-header {
+          font-weight: 600;
+          font-size: 1.1rem;
+          color: var(--kiosk-text-dark);
+          padding-bottom: 8px;
+          border-bottom: 2px solid var(--kiosk-peach);
+          margin-bottom: 12px;
+        }
+
+        .agenda-event {
+          display: flex;
+          align-items: flex-start;
+          gap: 12px;
+          padding: 10px 12px;
+          background: var(--kiosk-bg-warm);
+          border-radius: var(--kiosk-radius-sm);
+          margin-bottom: 8px;
+          border-left: 4px solid var(--kiosk-blue-soft);
+        }
+
+        .agenda-event-time {
+          font-size: 0.85rem;
+          font-weight: 600;
+          color: var(--kiosk-text-muted);
+          min-width: 60px;
+        }
+
+        .agenda-event-details {
+          flex: 1;
+        }
+
+        .agenda-event-title {
+          font-weight: 500;
+          color: var(--kiosk-text-dark);
+        }
+
+        .agenda-event-location {
+          font-size: 0.85rem;
+          color: var(--kiosk-text-muted);
+        }
+
+        .agenda-event-desc {
+          font-size: 0.85rem;
+          color: var(--kiosk-text-muted);
+          margin-top: 4px;
+        }
+
+        /* Week Preview Grid - Portrait optimized */
+        .week-preview-grid {
+          display: grid;
+          grid-template-columns: repeat(7, 1fr);
+          gap: 8px;
+          width: 100%;
+          overflow: hidden;
+        }
+
+        .week-day-card {
+          background: var(--kiosk-bg-warm);
+          border-radius: var(--kiosk-radius-sm);
+          padding: 10px;
+          min-height: 120px;
+          max-height: 140px;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        .week-day-card:hover {
+          transform: translateY(-2px);
+          box-shadow: var(--kiosk-shadow-elevated);
+        }
+
+        .week-day-card.today {
+          background: linear-gradient(135deg, rgba(255, 138, 128, 0.15), rgba(100, 181, 246, 0.15));
+          border: 2px solid var(--kiosk-coral);
+        }
+
+        .week-day-card.selected {
+          box-shadow: 0 0 0 3px var(--kiosk-blue-deep);
+        }
+
+        .week-day-card.selected.today {
+          box-shadow: 0 0 0 3px var(--kiosk-coral);
+        }
+
+        .week-day-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 8px;
+          padding-bottom: 6px;
+          border-bottom: 1px solid rgba(0,0,0,0.1);
+        }
+
+        .week-day-card .week-day-name {
+          font-size: 0.75rem;
+          font-weight: 600;
+          text-transform: uppercase;
+          color: var(--kiosk-text-muted);
+        }
+
+        .week-day-card .week-day-num {
+          font-size: 1.1rem;
+          font-weight: 700;
+          color: var(--kiosk-text-dark);
+        }
+
+        .week-day-card.today .week-day-num {
+          color: var(--kiosk-coral);
+        }
+
+        .week-day-events {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          overflow: hidden;
+        }
+
+        .week-day-event {
+          font-size: 0.7rem;
+          padding: 4px 6px;
+          background: white;
+          border-radius: 4px;
+          border-left: 3px solid var(--kiosk-blue-soft);
+          display: flex;
+          gap: 4px;
+          align-items: center;
+          overflow: hidden;
+        }
+
+        .week-day-event .event-time {
+          color: var(--kiosk-text-muted);
+          font-weight: 500;
+          flex-shrink: 0;
+        }
+
+        .week-day-event .event-title {
+          color: var(--kiosk-text-dark);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .week-day-more {
+          font-size: 0.7rem;
+          color: var(--kiosk-text-muted);
+          text-align: center;
+          padding: 2px;
+        }
+
+        .week-day-empty {
+          font-size: 0.75rem;
+          color: var(--kiosk-text-muted);
+          text-align: center;
+          opacity: 0.6;
+          padding: 8px;
+        }
+
+        /* Placeholder tabs */
+        .placeholder-content {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          height: 100%;
+          color: var(--kiosk-text-muted);
+          text-align: center;
+          padding: 40px;
+        }
+
+        .placeholder-icon {
+          font-size: 4rem;
+          margin-bottom: 20px;
+          opacity: 0.5;
+        }
+
+        .placeholder-text {
+          font-size: 1.2rem;
+        }
       </style>
 
       <div class="dashboard">
-        <!-- Header -->
+        <!-- Header with Tabs -->
         <header class="dashboard-header">
           <div class="header-left">
             <div class="header-logo">FamDo</div>
+            <nav class="header-tabs">
+              <button class="header-tab ${this._activeTab === 'calendar' ? 'active' : ''}" data-tab="calendar">
+                📅 Family Calendar
+              </button>
+              <button class="header-tab ${this._activeTab === 'chores' ? 'active' : ''}" data-tab="chores">
+                ✨ Chores
+              </button>
+              <button class="header-tab ${this._activeTab === 'shopping' ? 'active' : ''}" data-tab="shopping">
+                🛒 Shopping Lists
+              </button>
+              <button class="header-tab ${this._activeTab === 'todos' ? 'active' : ''}" data-tab="todos">
+                ✅ To Do's
+              </button>
+            </nav>
+          </div>
+          <div class="header-right">
             <div class="header-date">
               ${today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
             </div>
-          </div>
-          <div class="header-right">
             ${this._config.show_weather ? this._renderWeather() : ''}
             <div class="header-time">
               ${this._currentTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
@@ -1030,69 +1420,196 @@ class FamDoKioskDashboard extends HTMLElement {
           </div>
         </header>
 
-        <!-- Main Content -->
-        <div class="dashboard-content">
-          <!-- Left Sidebar - Members -->
-          <aside class="sidebar">
-            <div class="members-section">
-              <div class="section-title">Family Members</div>
-              <div class="members-list">
-                ${members.map(m => this._renderMemberCard(m)).join('')}
-              </div>
-            </div>
-          </aside>
-
-          <!-- Main Panels -->
-          <div class="main-panels">
-            <!-- Weekly Overview -->
-            <div class="panel weekly-panel">
-              <div class="panel-header">
-                <div class="panel-title">
-                  <span class="panel-title-icon">📅</span>
-                  This Week
-                </div>
-              </div>
-              <div class="week-grid">
-                ${weekDays.map(day => this._renderWeekDay(day)).join('')}
-              </div>
-            </div>
-
-            <!-- Today's Chores -->
-            <div class="panel">
-              <div class="panel-header">
-                <div class="panel-title">
-                  <span class="panel-title-icon">✨</span>
-                  Today's Chores
-                </div>
-                ${selectedMember ? `<span style="color: var(--kiosk-text-muted)">${selectedMember.name}</span>` : ''}
-              </div>
-              <div class="chores-list">
-                ${todayChores.length === 0 ? `
-                  <div class="empty-state">
-                    <div class="empty-state-icon">🎉</div>
-                    <p>All done for today!</p>
-                  </div>
-                ` : todayChores.map(c => this._renderChoreItem(c)).join('')}
-              </div>
-            </div>
-
-            <!-- Available Rewards -->
-            <div class="panel rewards-panel">
-              <div class="panel-header">
-                <div class="panel-title">
-                  <span class="panel-title-icon">🎁</span>
-                  Available Rewards
-                </div>
-                ${selectedMember ? `<span class="points-badge">⭐ ${selectedMember.points}</span>` : ''}
-              </div>
-              ${this._renderAllRewards(selectedMember)}
-            </div>
-          </div>
-        </div>
+        ${this._renderActiveTab(members, selectedMember, todayChores, weekDays)}
       </div>
     `;
 
     this._attachEventListeners();
+  }
+
+  _renderActiveTab(members, selectedMember, todayChores, weekDays) {
+    switch (this._activeTab) {
+      case 'calendar':
+        return this._renderCalendarTab(weekDays);
+      case 'shopping':
+        return this._renderShoppingTab();
+      case 'todos':
+        return this._renderTodosTab();
+      case 'chores':
+      default:
+        return this._renderChoresTab(members, selectedMember, todayChores);
+    }
+  }
+
+  _renderChoresTab(members, selectedMember, todayChores) {
+    return `
+      <div class="dashboard-content">
+        <!-- Left Column - Members (2/12) -->
+        <aside class="sidebar">
+          <div class="members-section">
+            <div class="section-title">Family Members</div>
+            <div class="members-list">
+              ${members.map(m => this._renderMemberCard(m)).join('')}
+            </div>
+          </div>
+        </aside>
+
+        <!-- Middle Column - Today's Chores (5/12) -->
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <span class="panel-title-icon">✨</span>
+              Today's Chores
+            </div>
+            ${selectedMember ? `<span style="color: var(--kiosk-text-muted)">${selectedMember.name}</span>` : ''}
+          </div>
+          <div class="chores-list">
+            ${todayChores.length === 0 ? `
+              <div class="empty-state">
+                <div class="empty-state-icon">🎉</div>
+                <p>All done for today!</p>
+              </div>
+            ` : todayChores.map(c => this._renderChoreItem(c)).join('')}
+          </div>
+        </div>
+
+        <!-- Right Column - Rewards (5/12) -->
+        <div class="panel rewards-panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <span class="panel-title-icon">🎁</span>
+              Available Rewards
+            </div>
+            ${selectedMember ? `<span class="points-badge">⭐ ${selectedMember.points}</span>` : ''}
+          </div>
+          ${this._renderAllRewards(selectedMember)}
+        </div>
+      </div>
+    `;
+  }
+
+  _renderCalendarTab(weekDays) {
+    const events = this._data?.events || [];
+    const today = new Date();
+    const todayStr = this._getLocalDateStr(today);
+    
+    // Get selected day's events for detailed agenda
+    const selectedDateStr = this._selectedCalendarDate;
+    const selectedDate = new Date(selectedDateStr + 'T00:00:00');
+    const isToday = selectedDateStr === todayStr;
+    const selectedEvents = events.filter(e => e.start_date === selectedDateStr)
+      .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''));
+
+    const dateLabel = isToday 
+      ? "Today's Schedule" 
+      : selectedDate.toLocaleDateString('en-US', { weekday: 'long' }) + "'s Schedule";
+
+    return `
+      <div class="dashboard-content full-width" style="display: flex; flex-direction: column; gap: 16px;">
+        <!-- Weekly Overview with event previews -->
+        <div class="panel" style="padding: 16px;">
+          <div class="panel-header" style="margin-bottom: 12px;">
+            <div class="panel-title">
+              <span class="panel-title-icon">📅</span>
+              This Week
+            </div>
+          </div>
+          <div class="week-preview-grid">
+            ${weekDays.map(day => this._renderCalendarWeekDay(day)).join('')}
+          </div>
+        </div>
+
+        <!-- Selected Day's Agenda (detailed) -->
+        <div class="panel" style="flex: 1; overflow-y: auto;">
+          <div class="panel-header">
+            <div class="panel-title">
+              <span class="panel-title-icon">📋</span>
+              ${dateLabel}
+            </div>
+            <span style="color: var(--kiosk-text-muted);">${selectedDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</span>
+          </div>
+          ${selectedEvents.length > 0 ? selectedEvents.map(e => `
+            <div class="agenda-event" style="border-left-color: ${e.color || 'var(--kiosk-blue-soft)'}">
+              <div class="agenda-event-time">${e.start_time || 'All day'}</div>
+              <div class="agenda-event-details">
+                <div class="agenda-event-title">${e.title || e.summary}</div>
+                ${e.location ? `<div class="agenda-event-location">📍 ${e.location}</div>` : ''}
+                ${e.description ? `<div class="agenda-event-desc">${e.description}</div>` : ''}
+              </div>
+            </div>
+          `).join('') : `
+            <div class="empty-state">
+              <div class="empty-state-icon">🎉</div>
+              <p>No events scheduled for ${isToday ? 'today' : 'this day'}!</p>
+            </div>
+          `}
+        </div>
+      </div>
+    `;
+  }
+
+  _renderCalendarWeekDay(day) {
+    // Only show calendar events, not chores
+    const events = this._getEventsForDay(day.date);
+
+    // Truncate title to max 12 chars for compact display
+    const truncate = (str, len) => str && str.length > len ? str.substring(0, len) + '…' : str;
+
+    // Show first 2-3 event titles as preview
+    const eventPreviews = events.slice(0, 3).map(e => 
+      `<div class="week-day-event" style="border-left-color: ${e.color || 'var(--kiosk-blue-soft)'}">
+        <span class="event-time">${e.start_time || '—'}</span>
+        <span class="event-title">${truncate(e.title || e.summary, 10)}</span>
+      </div>`
+    ).join('');
+    
+    const moreCount = events.length > 3 ? events.length - 3 : 0;
+    const isSelected = day.date === this._selectedCalendarDate;
+
+    return `
+      <div class="week-day-card ${day.isToday ? 'today' : ''} ${isSelected ? 'selected' : ''}" 
+           data-date="${day.date}" 
+           style="cursor: pointer;">
+        <div class="week-day-header">
+          <span class="week-day-name">${day.name}</span>
+          <span class="week-day-num">${day.dayNum}</span>
+        </div>
+        <div class="week-day-events">
+          ${eventPreviews}
+          ${moreCount > 0 ? `<div class="week-day-more">+${moreCount} more</div>` : ''}
+          ${events.length === 0 ? '<div class="week-day-empty">No events</div>' : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  _renderShoppingTab() {
+    return `
+      <div class="dashboard-content full-width">
+        <div class="panel" style="height: 100%;">
+          <div class="placeholder-content">
+            <div class="placeholder-icon">🛒</div>
+            <div class="placeholder-text">Shopping Lists coming soon!</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderTodosTab() {
+    return `
+      <div class="dashboard-content full-width">
+        <div class="panel" style="height: 100%;">
+          <div class="placeholder-content">
+            <div class="placeholder-icon">✅</div>
+            <div class="placeholder-text">To Do's coming soon!</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderMemberCard(member) {;
   }
 
   _renderMemberCard(member) {
@@ -1112,9 +1629,24 @@ class FamDoKioskDashboard extends HTMLElement {
 
   _renderWeekDay(day) {
     const chores = this._selectedMemberId ? this._getChoresForDay(this._selectedMemberId, day.date) : [];
+    const events = this._getEventsForDay(day.date);
     const completed = chores.filter(c => c.status === 'completed').length;
     const pending = chores.filter(c => c.status === 'awaiting_approval').length;
     const todo = chores.length - completed - pending;
+    const hasContent = chores.length > 0 || events.length > 0;
+
+    if (day.isToday) {
+      console.log('FamDo Dashboard: Today', day.date, {
+        chores: chores.length,
+        events: events.length,
+        selectedMemberId: this._selectedMemberId
+      });
+    }
+
+    // Render event dots with their calendar colors
+    const eventDots = events.map(e => 
+      `<span class="status-dot" style="background: ${e.color || 'var(--kiosk-blue-soft)'}"></span>`
+    ).join('');
 
     return `
       <div class="week-day ${day.isToday ? 'today' : ''}">
@@ -1124,14 +1656,15 @@ class FamDoKioskDashboard extends HTMLElement {
           ${Array(completed).fill('<span class="status-dot completed"></span>').join('')}
           ${Array(pending).fill('<span class="status-dot pending"></span>').join('')}
           ${Array(todo).fill('<span class="status-dot todo"></span>').join('')}
-          ${chores.length === 0 ? '<span style="font-size: 0.8rem; color: var(--kiosk-text-muted);">—</span>' : ''}
+          ${eventDots}
+          ${!hasContent ? '<span style="font-size: 0.8rem; color: var(--kiosk-text-muted);">—</span>' : ''}
         </div>
       </div>
     `;
   }
 
   _renderChoreItem(chore) {
-    const today = new Date().toISOString().split('T')[0];
+    const today = this._getLocalDateStr(new Date());
     const isOverdue = chore.due_date && chore.due_date < today;
     const isDueToday = chore.due_date === today;
     const isAssignedToMe = chore.assigned_to === this._selectedMemberId;
@@ -1281,6 +1814,21 @@ class FamDoKioskDashboard extends HTMLElement {
   }
 
   _attachEventListeners() {
+    // Tab navigation
+    this.shadowRoot.querySelectorAll('.header-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        this._switchTab(tab.dataset.tab);
+      });
+    });
+
+    // Calendar day selection
+    this.shadowRoot.querySelectorAll('.week-day-card[data-date]').forEach(card => {
+      card.addEventListener('click', () => {
+        this._selectedCalendarDate = card.dataset.date;
+        this._render();
+      });
+    });
+
     // Member selection
     this.shadowRoot.querySelectorAll('.member-card').forEach(card => {
       card.addEventListener('click', () => {
