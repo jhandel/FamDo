@@ -43,3 +43,4 @@ build/
 *.local
 secrets.yaml
 .storage/
+devserver/data.json

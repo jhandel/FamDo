@@ -8,6 +8,7 @@ class FamDoAdminApp {
         this.data = null;
         this.currentTab = 'dashboard';
         this.currentSubTab = {};
+        this.isDevServer = false;
         this.connection = null;
         this.subscriptionId = null;
         this.messageId = 1;
@@ -69,6 +70,7 @@ class FamDoAdminApp {
     handleMessage(message, resolve, reject) {
         switch (message.type) {
             case 'auth_required':
+                this.isDevServer = !!message.famdo_dev;
                 this.authenticate();
                 break;
             case 'auth_ok':
@@ -124,6 +126,12 @@ class FamDoAdminApp {
             } catch (e) {
                 console.log('Could not access parent auth');
             }
+        }
+
+        if (!token && this.isDevServer) {
+            // Dev server detected — use fallback token
+            console.log('Dev server detected, using dev fallback token');
+            token = 'famdo-dev-token';
         }
 
         if (token) {
@@ -398,6 +406,8 @@ class FamDoAdminApp {
                 const action = btn.dataset.action;
                 if (action === 'edit') {
                     this.showEditChoreModal(choreId);
+                } else if (action === 'reactivate') {
+                    this.reactivateTemplate(choreId);
                 } else if (action === 'delete') {
                     this.deleteChore(choreId);
                 }
@@ -1074,6 +1084,9 @@ class FamDoAdminApp {
                             <button class="btn btn-sm btn-secondary" data-action="edit">
                                 <span class="mdi mdi-pencil"></span>
                             </button>
+                            <button class="btn btn-sm btn-secondary" data-action="reactivate" title="Reactivate">
+                                <span class="mdi mdi-refresh"></span>
+                            </button>
                             <button class="btn btn-sm btn-danger" data-action="delete">
                                 <span class="mdi mdi-delete"></span>
                             </button>
@@ -1361,8 +1374,12 @@ class FamDoAdminApp {
         if (claimIds.length === 0) return;
 
         try {
+            const fulfillerId = await this.getApproverId();
             for (const claimId of claimIds) {
-                await this.sendCommand('famdo/fulfill_reward_claim', { claim_id: claimId });
+                await this.sendCommand('famdo/fulfill_reward_claim', {
+                    claim_id: claimId,
+                    fulfiller_id: fulfillerId
+                });
             }
             this.showToast(`Fulfilled ${claimIds.length} reward claims`, 'success');
             this.selectedClaims.clear();
@@ -1473,6 +1490,19 @@ class FamDoAdminApp {
         }
     }
 
+    async reactivateTemplate(templateId) {
+        try {
+            const approverId = await this.getApproverId();
+            await this.sendCommand('famdo/reactivate_template', {
+                template_id: templateId,
+                approver_id: approverId
+            });
+            this.showToast('Template reactivated', 'success');
+        } catch (error) {
+            this.showToast(`Failed: ${error.message}`, 'error');
+        }
+    }
+
     async deleteChore(choreId) {
         if (!confirm('Are you sure you want to delete this chore?')) return;
 
@@ -1486,7 +1516,11 @@ class FamDoAdminApp {
 
     async fulfillClaim(claimId) {
         try {
-            await this.sendCommand('famdo/fulfill_reward_claim', { claim_id: claimId });
+            const fulfillerId = await this.getApproverId();
+            await this.sendCommand('famdo/fulfill_reward_claim', {
+                claim_id: claimId,
+                fulfiller_id: fulfillerId
+            });
             this.showToast('Reward fulfilled!', 'success');
         } catch (error) {
             this.showToast(`Failed: ${error.message}`, 'error');

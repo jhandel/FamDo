@@ -30,6 +30,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, websocket_approve_chore)
     websocket_api.async_register_command(hass, websocket_reject_chore)
     websocket_api.async_register_command(hass, websocket_retry_chore)
+    websocket_api.async_register_command(hass, websocket_reactivate_template)
     websocket_api.async_register_command(hass, websocket_delete_chore)
     websocket_api.async_register_command(hass, websocket_add_reward)
     websocket_api.async_register_command(hass, websocket_update_reward)
@@ -435,6 +436,55 @@ async def websocket_retry_chore(
         connection.send_result(msg["id"], chore.to_dict())
     else:
         connection.send_error(msg["id"], "failed", "Could not retry chore")
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "famdo/reactivate_template",
+        vol.Required("template_id"): str,
+        vol.Required("approver_id"): str,
+    }
+)
+@websocket_api.async_response
+async def websocket_reactivate_template(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Reactivate a recurring chore template by creating a new instance."""
+    coordinator = _get_coordinator(hass)
+    approver_id = msg["approver_id"]
+
+    # Handle ha_user: prefix - verify HA user is admin
+    if approver_id.startswith("ha_user:"):
+        ha_user_id = approver_id[8:]  # Strip "ha_user:" prefix
+        if connection.user and connection.user.id == ha_user_id:
+            if not connection.user.is_admin:
+                connection.send_error(msg["id"], "unauthorized", "Only admin users can reactivate templates")
+                return
+            # Try to find a parent member linked to this HA user
+            for member in coordinator.famdo_data.members:
+                if member.ha_user_id == ha_user_id and member.role == "parent":
+                    approver_id = member.id
+                    break
+            else:
+                # No linked member, find any parent
+                for member in coordinator.famdo_data.members:
+                    if member.role == "parent":
+                        approver_id = member.id
+                        break
+                else:
+                    connection.send_error(msg["id"], "failed", "No parent member found. Please create a parent member first.")
+                    return
+        else:
+            connection.send_error(msg["id"], "unauthorized", "User mismatch")
+            return
+
+    chore = await coordinator.async_reactivate_template(msg["template_id"], approver_id)
+    if chore:
+        connection.send_result(msg["id"], chore.to_dict())
+    else:
+        connection.send_error(msg["id"], "failed", "Could not reactivate template")
 
 
 @websocket_api.websocket_command(

@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FamDo Kiosk — Dev Preview</title>
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { height: 100%; overflow: hidden; }
+        body { font-family: 'Nunito', sans-serif; }
+        #loading {
+            display: flex; align-items: center; justify-content: center;
+            height: 100vh; font-size: 1.25rem; color: #9E9E9E;
+            background: linear-gradient(135deg, #FFF8F0, #FDF6EE);
+        }
+        #loading.error { color: #E57373; }
+        famdo-kiosk-dashboard { display: block; width: 100%; height: 100vh; }
+        #dev-toolbar {
+            position: fixed; top: 8px; right: 12px; z-index: 10000;
+            display: flex; gap: 8px; font-size: 0.8rem;
+        }
+        #dev-toolbar a {
+            background: rgba(0,0,0,0.5); color: #fff; padding: 4px 10px;
+            border-radius: 6px; text-decoration: none; opacity: 0.6;
+            transition: opacity 0.2s;
+        }
+        #dev-toolbar a:hover { opacity: 1; }
+    </style>
+</head>
+<body>
+    <div id="dev-toolbar">
+        <a href="/famdo/">← Admin Console</a>
+    </div>
+    <div id="loading">Connecting to FamDo Dev Server…</div>
+
+    <!-- Load the kiosk dashboard component -->
+    <script src="famdo-kiosk-dashboard.js" type="module"></script>
+
+    <script>
+    (async function() {
+        const loadingEl = document.getElementById('loading');
+
+        // --- WebSocket connection to dev server ---
+        const wsUrl = `${window.location.origin.replace('http', 'ws')}/api/websocket`;
+        let ws;
+        let msgId = 1;
+        const pendingCalls = new Map();
+        const subscribers = [];
+
+        function nextId() { return msgId++; }
+
+        function connect() {
+            return new Promise((resolve, reject) => {
+                ws = new WebSocket(wsUrl);
+
+                ws.onopen = () => {};
+
+                ws.onmessage = (event) => {
+                    const msg = JSON.parse(event.data);
+
+                    if (msg.type === 'auth_required') {
+                        // Dev server — send dev token
+                        ws.send(JSON.stringify({ type: 'auth', access_token: 'famdo-dev-token' }));
+                        return;
+                    }
+
+                    if (msg.type === 'auth_ok') {
+                        resolve();
+                        return;
+                    }
+
+                    if (msg.type === 'auth_invalid') {
+                        reject(new Error('Auth failed'));
+                        return;
+                    }
+
+                    // Route result messages to pending callWS promises
+                    if (msg.type === 'result' && pendingCalls.has(msg.id)) {
+                        const { resolve: res, reject: rej } = pendingCalls.get(msg.id);
+                        pendingCalls.delete(msg.id);
+                        if (msg.success) {
+                            res(msg.result);
+                        } else {
+                            rej(new Error(msg.error?.message || 'Command failed'));
+                        }
+                        return;
+                    }
+
+                    // Route event messages to subscribers
+                    if (msg.type === 'event') {
+                        for (const sub of subscribers) {
+                            if (sub.id === msg.id) {
+                                sub.callback(msg.event);
+                            }
+                        }
+                    }
+                };
+
+                ws.onerror = () => reject(new Error('WebSocket connection failed'));
+                ws.onclose = () => {
+                    // Attempt reconnect after 3 seconds
+                    setTimeout(() => {
+                        connect().then(() => {
+                            // Re-trigger hass set to reload data
+                            const el = document.querySelector('famdo-kiosk-dashboard');
+                            if (el) el.hass = mockHass;
+                        }).catch(() => {});
+                    }, 3000);
+                };
+            });
+        }
+
+        // --- Mock hass object ---
+        // Provides the interface that Lovelace custom cards expect:
+        //   hass.callWS({ type, ...params }) -> Promise<result>
+        //   hass.connection.subscribeMessage(callback, { type }) -> Promise<unsubscribe>
+        const mockHass = {
+            callWS(msg) {
+                return new Promise((resolve, reject) => {
+                    const id = nextId();
+                    pendingCalls.set(id, { resolve, reject });
+                    ws.send(JSON.stringify({ id, ...msg }));
+                });
+            },
+            connection: {
+                subscribeMessage(callback, msg) {
+                    const id = nextId();
+                    const sub = { id, callback };
+                    subscribers.push(sub);
+
+                    // Send the subscribe command; the initial result comes back
+                    // as a normal result, then subsequent pushes come as events
+                    return new Promise((resolve, reject) => {
+                        pendingCalls.set(id, {
+                            resolve: (result) => {
+                                // Initial data delivered via the callback too
+                                callback({ data: result });
+                                resolve(() => {
+                                    // unsubscribe function
+                                    const idx = subscribers.indexOf(sub);
+                                    if (idx !== -1) subscribers.splice(idx, 1);
+                                });
+                            },
+                            reject
+                        });
+                        ws.send(JSON.stringify({ id, ...msg }));
+                    });
+                }
+            },
+            // Minimal user info
+            user: { id: 'dev-user-1', name: 'Developer', is_admin: true, is_owner: true },
+            states: {},
+            language: 'en',
+        };
+
+        // --- Boot ---
+        try {
+            await connect();
+            loadingEl.remove();
+
+            const dashboard = document.createElement('famdo-kiosk-dashboard');
+            dashboard.setConfig({
+                title: 'Family Dashboard',
+                show_weather: false,
+            });
+            document.body.appendChild(dashboard);
+
+            // Trigger data load by setting hass
+            dashboard.hass = mockHass;
+        } catch (e) {
+            loadingEl.textContent = `Failed to connect: ${e.message}`;
+            loadingEl.classList.add('error');
+        }
+    })();
+    </script>
+</body>
+</html>

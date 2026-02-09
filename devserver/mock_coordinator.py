@@ -1,19 +1,37 @@
-"""DataUpdateCoordinator for FamDo integration."""
+"""Standalone coordinator that replicates FamDoCoordinator business logic without Home Assistant."""
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+# ---------------------------------------------------------------------------
+# Import models / constants without pulling in homeassistant
+# ---------------------------------------------------------------------------
+import importlib.util as _ilu
 
-from .const import (
-    DOMAIN,
-    EVENT_CHORE_COMPLETED,
-    EVENT_POINTS_UPDATED,
-    EVENT_REWARD_CLAIMED,
-    EVENT_REWARD_FULFILLED,
+_famdo_dir = os.path.join(
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
+    "custom_components", "famdo",
+)
+
+
+def _load_module(name: str, path: str):
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = _ilu.spec_from_file_location(name, path)
+    mod = _ilu.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_load_module("custom_components.famdo.const", os.path.join(_famdo_dir, "const.py"))
+_models = _load_module("custom_components.famdo.models", os.path.join(_famdo_dir, "models.py"))
+
+from custom_components.famdo.const import (  # noqa: E402
     CHORE_STATUS_PENDING,
     CHORE_STATUS_CLAIMED,
     CHORE_STATUS_AWAITING_APPROVAL,
@@ -27,8 +45,12 @@ from .const import (
     RECURRENCE_MONTHLY,
     DEFAULT_MAX_INSTANCES,
     ROLE_PARENT,
+    EVENT_CHORE_COMPLETED,
+    EVENT_POINTS_UPDATED,
+    EVENT_REWARD_CLAIMED,
+    EVENT_REWARD_FULFILLED,
 )
-from .models import (
+from custom_components.famdo.models import (  # noqa: E402
     FamilyMember,
     Chore,
     Reward,
@@ -36,38 +58,81 @@ from .models import (
     TodoItem,
     CalendarEvent,
     FamDoData,
+    generate_id,
 )
-from .storage import FamDoStore
+
+from .mock_storage import MockStore  # noqa: E402
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
-    """Coordinator for FamDo data."""
+class MockCoordinator:
+    """Coordinator that mirrors FamDoCoordinator without any Home Assistant dependency."""
 
-    def __init__(self, hass: HomeAssistant, store: FamDoStore) -> None:
+    def __init__(self, store: MockStore) -> None:
         """Initialize the coordinator."""
-        super().__init__(
-            hass,
-            _LOGGER,
-            name=DOMAIN,
-            update_interval=timedelta(minutes=1),  # Check for overdue chores
-        )
         self.store = store
         self._data: FamDoData | None = None
+        self._listeners: list[Callable[[], None]] = []
+        self._event_log: list[dict[str, Any]] = []
 
-    async def _async_update_data(self) -> FamDoData:
-        """Fetch data and check for overdue chores."""
+    # ------------------------------------------------------------------
+    # Listener / notification helpers (replace HA DataUpdateCoordinator)
+    # ------------------------------------------------------------------
+
+    def async_add_listener(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """Register a listener; returns an unsubscribe function."""
+        self._listeners.append(callback)
+
+        def _unsub() -> None:
+            self._listeners.remove(callback)
+
+        return _unsub
+
+    def async_set_updated_data(self, data: FamDoData | None) -> None:
+        """Notify all listeners that data changed (replaces HA helper)."""
+        for cb in list(self._listeners):
+            try:
+                cb()
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Error in listener callback")
+
+    def _fire_event(self, event_type: str, data: dict[str, Any]) -> None:
+        """Log an event (replaces hass.bus.async_fire)."""
+        entry = {"event_type": event_type, **data}
+        self._event_log.append(entry)
+        _LOGGER.debug("Event fired: %s %s", event_type, data)
+
+    # ------------------------------------------------------------------
+    # Initialisation
+    # ------------------------------------------------------------------
+
+    async def async_init(self) -> None:
+        """Load data from storage."""
+        self._data = await self.store.async_load()
+
+    @property
+    def famdo_data(self) -> FamDoData:
+        """Get the FamDo data."""
+        if self._data is None:
+            raise RuntimeError("Data not loaded")
+        return self._data
+
+    # ------------------------------------------------------------------
+    # Periodic maintenance (replaces _async_update_data polling)
+    # ------------------------------------------------------------------
+
+    async def async_refresh(self) -> FamDoData:
+        """Run the same checks the HA coordinator does on every poll."""
         if self._data is None:
             self._data = await self.store.async_load()
-
-        # Check for overdue chores
         await self._check_overdue_chores()
-
-        # Reset recurring chores
         await self._reset_recurring_chores()
-
         return self._data
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
     async def _check_overdue_chores(self) -> None:
         """Mark overdue chores and apply negative points."""
@@ -188,27 +253,17 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         if template.recurrence == RECURRENCE_DAILY:
             return from_date.isoformat()
         elif template.recurrence == RECURRENCE_WEEKLY:
-            # Due at end of week (or same day next week)
             return (from_date + timedelta(days=7)).isoformat()
         elif template.recurrence == RECURRENCE_MONTHLY:
             return (from_date + timedelta(days=30)).isoformat()
         elif template.recurrence == RECURRENCE_ALWAYS_ON:
-            # Always-on chores don't have due dates by default
             return None
         return None
 
     async def _create_chore_instance(
         self, template: Chore, due_date: str | None = None, assigned_to: str | None = None
     ) -> Chore:
-        """Create a new instance from a template.
-
-        Args:
-            template: The template chore to create an instance from
-            due_date: Optional due date for the instance
-            assigned_to: Optional member to assign to (overrides template assignment)
-        """
-        from .models import generate_id
-
+        """Create a new instance from a template."""
         instance = Chore(
             id=generate_id(),
             name=template.name,
@@ -216,7 +271,7 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
             points=template.points,
             assigned_to=assigned_to if assigned_to else template.assigned_to,
             status=CHORE_STATUS_PENDING,
-            recurrence=template.recurrence,  # Keep for reference
+            recurrence=template.recurrence,
             due_date=due_date,
             due_time=template.due_time,
             icon=template.icon,
@@ -228,13 +283,6 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         self._data.chores.append(instance)
         _LOGGER.debug("Created new instance of recurring chore: %s", template.name)
         return instance
-
-    @property
-    def famdo_data(self) -> FamDoData:
-        """Get the FamDo data."""
-        if self._data is None:
-            raise RuntimeError("Data not loaded")
-        return self._data
 
     # ==================== Member Management ====================
 
@@ -295,7 +343,7 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         member.points += points
         await self.store.async_save()
 
-        self.hass.bus.async_fire(
+        self._fire_event(
             EVENT_POINTS_UPDATED,
             {"member_id": member_id, "points": member.points, "added": points},
         )
@@ -333,7 +381,7 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
                 points=points,
                 assigned_to=assigned_to,
                 recurrence=recurrence,
-                due_date=None,  # Templates don't have due dates
+                due_date=None,
                 due_time=due_time,
                 icon=icon,
                 is_template=True,
@@ -346,7 +394,7 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
             instance = await self._create_chore_instance(template, due_date)
             await self.store.async_save()
             self.async_set_updated_data(self._data)
-            return instance  # Return the instance, not the template
+            return instance
         else:
             # One-time chore
             chore = Chore(
@@ -439,7 +487,7 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         if chore.claimed_by:
             await self.async_add_points(chore.claimed_by, chore.points)
 
-        self.hass.bus.async_fire(
+        self._fire_event(
             EVENT_CHORE_COMPLETED,
             {
                 "chore_id": chore_id,
@@ -452,15 +500,13 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         if chore.template_id and chore.recurrence == RECURRENCE_ALWAYS_ON:
             template = self.famdo_data.get_chore_by_id(chore.template_id)
             if template and template.is_template:
-                # Check if we're under the max instances limit
                 active_count = self._count_active_instances(template.id)
                 if active_count < template.max_instances:
-                    # Use the template's assignment (None if unassigned/open to anyone)
                     await self._create_chore_instance(template, assigned_to=template.assigned_to)
                     _LOGGER.info(
                         "Created new always-on instance for chore: %s (assigned to: %s)",
                         template.name,
-                        template.assigned_to
+                        template.assigned_to,
                     )
 
         await self.store.async_save()
@@ -495,7 +541,7 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
                     _LOGGER.info(
                         "Created new always-on instance after rejection: %s (assigned to: %s)",
                         template.name,
-                        template.assigned_to
+                        template.assigned_to,
                     )
 
         await self.store.async_save()
@@ -510,7 +556,6 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         if chore is None:
             return None
 
-        # Verify the member is the one who claimed it
         if chore.claimed_by != member_id:
             return None
 
@@ -518,7 +563,7 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
             return None
 
         chore.status = CHORE_STATUS_CLAIMED
-        chore.completed_at = None  # Clear completed timestamp
+        chore.completed_at = None
         await self.store.async_save()
         self.async_set_updated_data(self._data)
         return chore
@@ -638,7 +683,7 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         )
         self.famdo_data.reward_claims.append(claim)
 
-        self.hass.bus.async_fire(
+        self._fire_event(
             EVENT_REWARD_CLAIMED,
             {
                 "reward_id": reward_id,
@@ -665,12 +710,7 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
     async def async_fulfill_reward_claim(
         self, claim_id: str, fulfiller_id: str
     ) -> RewardClaim | None:
-        """Mark a reward claim as fulfilled (delivered to recipient).
-
-        Args:
-            claim_id: The ID of the claim to fulfill
-            fulfiller_id: The ID of the parent fulfilling the claim
-        """
+        """Mark a reward claim as fulfilled."""
         claim = self.famdo_data.get_reward_claim_by_id(claim_id)
         if claim is None:
             return None
@@ -688,7 +728,7 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         claim.status = "fulfilled"
         claim.fulfilled_at = datetime.now().isoformat()
 
-        self.hass.bus.async_fire(
+        self._fire_event(
             EVENT_REWARD_FULFILLED,
             {
                 "claim_id": claim_id,
@@ -730,6 +770,15 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         await self.store.async_save()
         self.async_set_updated_data(self._data)
         return True
+
+    async def async_delete_all_reward_claims(self) -> int:
+        """Delete all reward claims."""
+        count = len(self.famdo_data.reward_claims)
+        self.famdo_data.reward_claims.clear()
+        await self.store.async_save()
+        self.async_set_updated_data(self._data)
+        _LOGGER.info("Deleted %d reward claims", count)
+        return count
 
     # ==================== Todo Management ====================
 
@@ -795,6 +844,15 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
                 return True
         return False
 
+    async def async_delete_all_todos(self) -> int:
+        """Delete all todo items."""
+        count = len(self.famdo_data.todos)
+        self.famdo_data.todos.clear()
+        await self.store.async_save()
+        self.async_set_updated_data(self._data)
+        _LOGGER.info("Deleted %d todos", count)
+        return count
+
     # ==================== Calendar Event Management ====================
 
     async def async_add_event(
@@ -856,6 +914,15 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
                 return True
         return False
 
+    async def async_delete_all_events(self) -> int:
+        """Delete all calendar events."""
+        count = len(self.famdo_data.events)
+        self.famdo_data.events.clear()
+        await self.store.async_save()
+        self.async_set_updated_data(self._data)
+        _LOGGER.info("Deleted %d events", count)
+        return count
+
     # ==================== Settings ====================
 
     async def async_update_settings(self, **kwargs: Any) -> dict:
@@ -875,14 +942,7 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
     # ==================== Bulk Delete Operations ====================
 
     async def async_delete_all_chores(self, keep_templates: bool = False) -> int:
-        """Delete all chores.
-
-        Args:
-            keep_templates: If True, keeps recurring chore templates
-
-        Returns:
-            Number of chores deleted
-        """
+        """Delete all chores."""
         if keep_templates:
             to_delete = [c for c in self.famdo_data.chores if not c.is_template]
         else:
@@ -898,11 +958,7 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         return count
 
     async def async_delete_all_rewards(self) -> int:
-        """Delete all rewards.
-
-        Returns:
-            Number of rewards deleted
-        """
+        """Delete all rewards."""
         count = len(self.famdo_data.rewards)
         self.famdo_data.rewards.clear()
         await self.store.async_save()
@@ -910,51 +966,8 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         _LOGGER.info("Deleted %d rewards", count)
         return count
 
-    async def async_delete_all_reward_claims(self) -> int:
-        """Delete all reward claims.
-
-        Returns:
-            Number of reward claims deleted
-        """
-        count = len(self.famdo_data.reward_claims)
-        self.famdo_data.reward_claims.clear()
-        await self.store.async_save()
-        self.async_set_updated_data(self._data)
-        _LOGGER.info("Deleted %d reward claims", count)
-        return count
-
-    async def async_delete_all_todos(self) -> int:
-        """Delete all todo items.
-
-        Returns:
-            Number of todos deleted
-        """
-        count = len(self.famdo_data.todos)
-        self.famdo_data.todos.clear()
-        await self.store.async_save()
-        self.async_set_updated_data(self._data)
-        _LOGGER.info("Deleted %d todos", count)
-        return count
-
-    async def async_delete_all_events(self) -> int:
-        """Delete all calendar events.
-
-        Returns:
-            Number of events deleted
-        """
-        count = len(self.famdo_data.events)
-        self.famdo_data.events.clear()
-        await self.store.async_save()
-        self.async_set_updated_data(self._data)
-        _LOGGER.info("Deleted %d events", count)
-        return count
-
     async def async_delete_all_members(self) -> int:
-        """Delete all family members.
-
-        Returns:
-            Number of members deleted
-        """
+        """Delete all family members."""
         count = len(self.famdo_data.members)
         self.famdo_data.members.clear()
         await self.store.async_save()
@@ -963,14 +976,7 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         return count
 
     async def async_clear_all_data(self, keep_members: bool = False) -> dict:
-        """Clear all data - reset the entire installation.
-
-        Args:
-            keep_members: If True, keeps family members but resets their points
-
-        Returns:
-            Dict with counts of deleted items
-        """
+        """Clear all data - reset the entire installation."""
         counts = {
             "chores": len(self.famdo_data.chores),
             "rewards": len(self.famdo_data.rewards),
@@ -980,7 +986,6 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
             "members": 0 if keep_members else len(self.famdo_data.members),
         }
 
-        # Clear all data lists
         self.famdo_data.chores.clear()
         self.famdo_data.rewards.clear()
         self.famdo_data.reward_claims.clear()
@@ -988,13 +993,11 @@ class FamDoCoordinator(DataUpdateCoordinator[FamDoData]):
         self.famdo_data.events.clear()
 
         if keep_members:
-            # Reset points for all members
             for member in self.famdo_data.members:
                 member.points = 0
         else:
             self.famdo_data.members.clear()
 
-        # Reset settings to defaults (keep family name if keeping members)
         if not keep_members:
             self.famdo_data.family_name = "Our Family"
         self.famdo_data.settings = {}

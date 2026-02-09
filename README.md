@@ -199,6 +199,83 @@ All data is stored locally in Home Assistant's storage system:
 - HACS (for easy installation)
 - Modern web browser with JavaScript enabled
 
+## Development
+
+### Dev Server (No Home Assistant Required)
+
+FamDo includes a standalone dev server for frontend development and testing without a Home Assistant instance:
+
+```bash
+# Install dependencies
+pip install aiohttp
+
+# Start the dev server
+python devserver/server.py
+
+# Or use the convenience script
+./scripts/dev.sh
+```
+
+Open **http://localhost:8123/famdo/index.html** in your browser. The dev server:
+- Serves the FamDo admin console
+- Implements the full WebSocket API (all 35+ commands)
+- Persists data to `devserver/data.json`
+- Auto-seeds with sample family data on first run
+
+See [devserver/README.md](devserver/README.md) for full details.
+
+### Running Tests
+
+```bash
+# Install test dependencies
+pip install pytest pytest-asyncio aiohttp
+
+# Run all tests
+python -m pytest tests/ -v
+
+# Or use the convenience script
+./scripts/test.sh -v
+
+# Run specific test files
+python -m pytest tests/test_models.py -v      # Model tests
+python -m pytest tests/test_coordinator.py -v  # Business logic tests
+python -m pytest tests/test_devserver.py -v    # Integration tests
+```
+
+### Project Structure
+
+```
+FamDo/
+├── custom_components/famdo/    # Home Assistant integration
+│   ├── __init__.py             # Integration setup
+│   ├── coordinator.py          # Business logic coordinator
+│   ├── models.py               # Data models (no HA deps)
+│   ├── const.py                # Constants (no HA deps)
+│   ├── websocket_api.py        # WebSocket command handlers
+│   ├── sensor.py               # HA sensor platform
+│   ├── calendar.py             # HA calendar platform
+│   ├── storage.py              # HA storage wrapper
+│   └── www/                    # Frontend files
+│       ├── index.html          # Admin console
+│       ├── app.js              # Main application
+│       ├── styles.css           # Styles
+│       └── kiosk/              # Kiosk dashboard cards
+├── devserver/                  # Local dev server
+│   ├── server.py               # HTTP + WebSocket server
+│   ├── mock_coordinator.py     # Standalone coordinator
+│   ├── mock_storage.py         # JSON file storage
+│   └── seed_data.py            # Sample data generator
+├── tests/                      # Test suite
+│   ├── test_models.py          # Model serialization tests
+│   ├── test_coordinator.py     # Business logic tests
+│   └── test_devserver.py       # Integration tests
+└── scripts/
+    ├── dev.sh                  # Start dev server
+    ├── test.sh                 # Run tests
+    ├── deploy.sh               # Deploy to HA
+    └── deploy-quick.sh         # Quick frontend deploy
+```
+
 ## Support
 
 - [Report Issues](https://github.com/jhandel/FamDo/issues)
