@@ -199,47 +199,60 @@ All data is stored locally in Home Assistant's storage system:
 - HACS (for easy installation)
 - Modern web browser with JavaScript enabled
 
-## Development
+## Developers
 
 ### Dev Server (No Home Assistant Required)
 
-FamDo includes a standalone dev server for frontend development and testing without a Home Assistant instance:
+FamDo includes a standalone dev server that mocks the Home Assistant WebSocket protocol, so you can develop and test the frontend without a running HA instance.
 
 ```bash
 # Install dependencies
 pip install aiohttp
 
-# Start the dev server
-python devserver/server.py
-
-# Or use the convenience script
+# Start the dev server (auto-detects available port)
 ./scripts/dev.sh
+
+# Or run directly
+python -m devserver.server --port 8123
 ```
 
-Open **http://localhost:8123/famdo/index.html** in your browser. The dev server:
-- Serves the FamDo admin console
-- Implements the full WebSocket API (all 35+ commands)
-- Persists data to `devserver/data.json`
-- Auto-seeds with sample family data on first run
+The server prints the URLs on startup:
+
+| Page | URL | Description |
+|------|-----|-------------|
+| **Admin Console** | `http://localhost:8123/famdo/` | Main management dashboard |
+| **Kiosk Preview** | `http://localhost:8123/famdo/kiosk/` | Wall-mounted tablet kiosk view |
+| **WebSocket** | `ws://localhost:8123/api/websocket` | Raw WebSocket endpoint |
+
+Both pages include navigation links to switch between them.
+
+**What the dev server provides:**
+- Full WebSocket API — all 35+ `famdo/*` commands
+- Mock authentication (auto-detected by the frontend via the `famdo_dev` flag)
+- JSON file persistence (`devserver/data.json`, gitignored)
+- Auto-seeds with sample family data (4 members, 8 chores, 3 rewards) on first run
+- Port conflict auto-detection — if 8123 is in use, `dev.sh` tries 8124 and 8125
 
 See [devserver/README.md](devserver/README.md) for full details.
 
 ### Running Tests
+
+66 tests covering models, business logic, and WebSocket integration:
 
 ```bash
 # Install test dependencies
 pip install pytest pytest-asyncio aiohttp
 
 # Run all tests
-python -m pytest tests/ -v
-
-# Or use the convenience script
 ./scripts/test.sh -v
 
-# Run specific test files
-python -m pytest tests/test_models.py -v      # Model tests
-python -m pytest tests/test_coordinator.py -v  # Business logic tests
-python -m pytest tests/test_devserver.py -v    # Integration tests
+# Or run directly
+python -m pytest tests/ -v
+
+# Run specific test suites
+python -m pytest tests/test_models.py -v      # 27 model serialization tests
+python -m pytest tests/test_coordinator.py -v  # 29 business logic tests
+python -m pytest tests/test_devserver.py -v    # 10 WebSocket integration tests
 ```
 
 ### Project Structure
@@ -258,14 +271,17 @@ FamDo/
 │   └── www/                    # Frontend files
 │       ├── index.html          # Admin console
 │       ├── app.js              # Main application
-│       ├── styles.css           # Styles
-│       └── kiosk/              # Kiosk dashboard cards
+│       ├── styles.css          # Styles
+│       └── kiosk/              # Kiosk dashboard
+│           ├── index.html      # Dev preview host page
+│           ├── famdo-kiosk-dashboard.js
+│           └── famdo-kiosk-cards.js
 ├── devserver/                  # Local dev server
 │   ├── server.py               # HTTP + WebSocket server
 │   ├── mock_coordinator.py     # Standalone coordinator
 │   ├── mock_storage.py         # JSON file storage
 │   └── seed_data.py            # Sample data generator
-├── tests/                      # Test suite
+├── tests/                      # Test suite (66 tests)
 │   ├── test_models.py          # Model serialization tests
 │   ├── test_coordinator.py     # Business logic tests
 │   └── test_devserver.py       # Integration tests
